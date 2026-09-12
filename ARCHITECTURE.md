@@ -22,6 +22,11 @@ The core job of the system is to detect supported video player setups on a page 
 - Extracts links from the page DOM and player state accessible to content scripts.
 - Presents results in the popup and forwards selected links to the desktop app.
 
+Current scaffold state:
+  - `content.js` and `popup.js` now exist as scaffolds.
+  - The popup UI already expects `#status`, `#links`, `#count-badge`, `#copy-btn`, `#idm-btn`, and `#send-btn`.
+  - IDM behavior is intentionally represented as an integration point but is not implemented yet.
+
 ### Userscript
 
 - An alternative page-injection path for people who prefer a script manager or do not want the extension.
