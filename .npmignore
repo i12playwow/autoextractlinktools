@@ -1,0 +1,15 @@
+node_modules/
+.npmignore
+.gitignore
+.git/
+.freebuff/
+
+# Noisy desktop backup / copy artifacts
+*- Copy*.png
+*- Copy*.json
+*- Copy*.html
+*- Copy*.js
+*- Copy*.css
+package-DESKTOP-*.json
+package-lock - Copy*.json
+package - Copy*.json

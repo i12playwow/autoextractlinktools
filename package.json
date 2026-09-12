@@ -1,27 +1,39 @@
 {
   "name": "autoextractlinktools",
   "version": "1.0.0",
-  "description": "Extract video links from multi-tab video player interfaces via headless browser automation",
+  "description": "Electron desktop app with a Chrome extension bridge, plus an optional userscript path, for extracting video player links and forwarding them to the local desktop app",
   "license": "MIT",
-  "main": "main.js",
+  "main": "src/main.js",
   "bin": {
     "autoextract": "./bin/autoextract.js"
   },
+  "files": [
+    "src/",
+    "shared/",
+    "bin/",
+    "chrome-extension/",
+    "userscript/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node bin/autoextract.js",
-    "desktop": "electron ."
+    "desktop": "electron src",
+    "dev:desktop": "electron src"
   },
   "keywords": [
     "video",
     "extract",
     "links",
     "puppeteer",
-    "scraper"
+    "electron",
+    "chrome-extension",
+    "desktop"
   ],
   "dependencies": {
     "commander": "^12.0.0",
     "electron": "^33.0.0",
     "puppeteer-core": "^25.2.0"
-  },
-  "allowScripts": {}
+  }
 }
