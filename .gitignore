@@ -1,0 +1,18 @@
+node_modules/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Noisy desktop backup / copy artifacts
+*- Copy*.png
+*- Copy*.json
+*- Copy*.html
+*- Copy*.js
+*- Copy*.css
+package-DESKTOP-*.json
+package-lock - Copy*.json
+package - Copy*.json

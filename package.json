@@ -1,0 +1,27 @@
+{
+  "name": "autoextractlinktools",
+  "version": "1.0.0",
+  "description": "Extract video links from multi-tab video player interfaces via headless browser automation",
+  "license": "MIT",
+  "main": "main.js",
+  "bin": {
+    "autoextract": "./bin/autoextract.js"
+  },
+  "scripts": {
+    "start": "node bin/autoextract.js",
+    "desktop": "electron ."
+  },
+  "keywords": [
+    "video",
+    "extract",
+    "links",
+    "puppeteer",
+    "scraper"
+  ],
+  "dependencies": {
+    "commander": "^12.0.0",
+    "electron": "^33.0.0",
+    "puppeteer-core": "^25.2.0"
+  },
+  "allowScripts": {}
+}

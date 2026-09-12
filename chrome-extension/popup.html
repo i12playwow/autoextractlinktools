@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 380px;
+      font-family: -apple-system, 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 12px;
+    }
+    h1 { font-size: 14px; color: #e94560; margin-bottom: 10px; }
+    #status { font-size: 12px; color: #888; margin-bottom: 8px; }
+    .link-item {
+      padding: 6px 8px;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      margin-bottom: 4px;
+      font-size: 11px;
+    }
+    .link-item .server { color: #e94560; font-weight: 600; }
+    .link-item .type { color: #4fc3f7; font-size: 10px; }
+    .link-item .url {
+      color: #aaa;
+      word-break: break-all;
+      font-family: monospace;
+      font-size: 10px;
+      margin-top: 2px;
+    }
+    #actions { display: flex; gap: 6px; margin-top: 10px; }
+    #actions button {
+      flex: 1;
+      padding: 8px;
+      border: none;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #copy-btn { background: #e94560; color: #fff; }
+    #copy-btn:hover { background: #d63851; }
+    #idm-btn { background: #2e7d32; color: #fff; }
+    #idm-btn:hover { background: #1b5e20; }
+    #send-btn { background: #0f3460; color: #e0e0e0; }
+    #send-btn:hover { background: #1a4a7a; }
+    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .badge { font-size: 11px; color: #888; margin-bottom: 6px; }
+    #no-data { color: #555; font-style: italic; text-align: center; padding: 20px 0; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>AutoExtract Link Tools</h1>
+  <div id="status">Detecting page...</div>
+  <div id="no-data">No video links found on this page.</div>
+  <div id="links"></div>
+  <div class="badge" id="count-badge"></div>
+  <div id="actions">
+    <button id="copy-btn">Copy JSON</button>
+    <button id="idm-btn" disabled>Open in IDM</button>
+    <button id="send-btn" disabled>Send to Desktop</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
