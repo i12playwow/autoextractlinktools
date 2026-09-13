@@ -23,103 +23,78 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// Inlined shared module.
+// Shared module.
 //
-// In a real build this would come from shared/index.js through a bundler.
-// For now it is inlined here so the extension is loadable immediately.
-// ---------------------------------------------------------------------------
-
-function detect(context) {
-  if (!context || !context.document) {
-    return null;
-  }
-
-  const markers = context.document.querySelectorAll('[data-autoextract]');
-  if (markers.length > 0) {
-    return {
-      supported: true,
-      type: 'stub',
-      markerCount: markers.length
-    };
-  }
-
-  return null;
-}
-
-function extract(context) {
-  const links = [];
-  const sources = [];
-
-  if (!context || !context.document) {
-    return { links, sources };
-  }
-
-  const markers = context.document.querySelectorAll('[data-autoextract]');
-  markers.forEach((marker) => {
-    const url = marker.getAttribute('data-autoextract-url') || marker.getAttribute('href') || '';
-    const type = marker.getAttribute('data-autoextract-type') || marker.getAttribute('data-autoextract') || 'link';
-    const server = marker.getAttribute('data-autoextract-server') || 'stub';
-
-    if (url) {
-      links.push({
-        server: server,
-        type: type,
-        url: url
-      });
-    }
-
-    sources.push({
-      element: marker.tagName.toLowerCase(),
-      attributes: Array.from(marker.attributes).map(function (attr) {
-        return attr.name;
-      })
-    });
-  });
-
-  return { links, sources };
-}
-
-// ---------------------------------------------------------------------------
-// Content script behavior.
-//
-// Responsibilities:
-//   - Detect supported video player setups on the current page.
-//   - Extract available links.
-//   - Store results in chrome.storage.local keyed by the active tab ID so the
-//     popup can read them later.
+// Loaded from the extension bundle so content.js and popup.js use the same
+// shared logic without duplicating it.
 // ---------------------------------------------------------------------------
 
 (function () {
-  var context = {
-    document: document
-  };
-
-  var detection = detect(context);
-  var results = detection ? extract(context) : { links: [], sources: [] };
-
-  results.detection = detection;
-
-  // Only store if we have an active tab ID.
-  chrome.tabs && chrome.tabs.query && chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-    if (!tabs || !tabs.length) {
-      console.warn('AutoExtract: no active tab found for storage.');
+  // Wait for the shared module to be available, then run detection/extraction.
+  function run() {
+    if (!window.AutoExtract) {
+      console.warn('AutoExtract content script: shared module not loaded.');
       return;
     }
 
-    var tabId = tabs[0].id;
-    if (typeof tabId === 'undefined') {
-      console.warn('AutoExtract: active tab has no id.');
+    var context = {
+      document: document
+    };
+
+    var detection = window.AutoExtract.detect(context);
+    var results = detection ? window.AutoExtract.extract(context) : { links: [], sources: [] };
+
+    results.detection = detection;
+
+    if (!chrome.tabs || !chrome.tabs.query) {
+      console.warn('AutoExtract content script: tabs API not available.');
       return;
     }
 
-    chrome.storage.local.set({
-      ['autoextract_results_' + tabId]: results
-    }, function () {
-      if (chrome.runtime.lastError) {
-        console.warn('AutoExtract: failed to store results.', chrome.runtime.lastError);
+    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+      if (!tabs || !tabs.length) {
+        console.warn('AutoExtract: no active tab found for storage.');
         return;
       }
-      console.log('AutoExtract: stored results for tab', tabId, '(', results.links.length, 'links)');
+
+      var tabId = tabs[0].id;
+      if (typeof tabId === 'undefined') {
+        console.warn('AutoExtract: active tab has no id.');
+        return;
+      }
+
+      chrome.storage.local.set({
+        ['autoextract_results_' + tabId]: results
+      }, function () {
+        if (chrome.runtime.lastError) {
+          console.warn('AutoExtract: failed to store results.', chrome.runtime.lastError);
+          return;
+        }
+        console.log('AutoExtract: stored results for tab', tabId, '(', results.links.length, 'links)');
+      });
     });
-  });
+  }
+
+  if (window.AutoExtract) {
+    run();
+  } else {
+    // The shared script may still be loading.
+    window.addEventListener('load', run);
+  }
+})();
+
+// Load the shared module from the extension bundle.
+(function () {
+  var sharedPath = chrome.runtime.getURL('../shared/index.js');
+
+  // Guard against environments where the extension path is not available.
+  if (!sharedPath) {
+    console.warn('AutoExtract content script: unable to resolve shared module path.');
+    return;
+  }
+
+  var script = document.createElement('script');
+  script.src = sharedPath;
+  script.async = false;
+  (document.head || document.documentElement).appendChild(script);
 })();

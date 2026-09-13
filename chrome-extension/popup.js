@@ -29,59 +29,10 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// Inlined shared module (mirror of shared/index.js for now).
-// ---------------------------------------------------------------------------
-
-function detect(context) {
-  if (!context || !context.document) {
-    return null;
-  }
-
-  const markers = context.document.querySelectorAll('[data-autoextract]');
-  if (markers.length > 0) {
-    return {
-      supported: true,
-      type: 'stub',
-      markerCount: markers.length
-    };
-  }
-
-  return null;
-}
-
-function extract(context) {
-  const links = [];
-  const sources = [];
-
-  if (!context || !context.document) {
-    return { links, sources };
-  }
-
-  const markers = context.document.querySelectorAll('[data-autoextract]');
-  markers.forEach((marker) => {
-    const url = marker.getAttribute('data-autoextract-url') || marker.getAttribute('href') || '';
-    const type = marker.getAttribute('data-autoextract-type') || marker.getAttribute('data-autoextract') || 'link';
-    const server = marker.getAttribute('data-autoextract-server') || 'stub';
-
-    if (url) {
-      links.push({
-        server: server,
-        type: type,
-        url: url
-      });
-    }
-
-    sources.push({
-      element: marker.tagName.toLowerCase(),
-      attributes: Array.from(marker.attributes).map((attr) => attr.name)
-    });
-  });
-
-  return { links, sources };
-}
-
-// ---------------------------------------------------------------------------
 // Popup UI wiring.
+//
+// This popup reads extraction results that were stored by the content script
+// for the active tab. It does not run extraction itself.
 // ---------------------------------------------------------------------------
 
 const STATUS_EL = document.getElementById('status');
@@ -222,6 +173,10 @@ async function sendToDesktop(results) {
 
 /**
  * Read the latest stored results for the active tab and render them.
+ *
+ * The popup depends on the content script having already stored results for the
+ * current tab. If nothing is stored, the popup shows the no-links state instead
+ * of running its own detection.
  */
 function loadResults() {
   setStatus('Loading results...');
@@ -232,14 +187,21 @@ function loadResults() {
     return;
   }
 
-  chrome.tabs && chrome.tabs.query && chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-    var tabId = null;
+  if (!chrome.tabs || !chrome.tabs.query) {
+    setStatus('Tabs API not available');
+    disableActionButtons();
+    return;
+  }
 
-    if (tabs && tabs.length) {
-      tabId = tabs[0].id;
+  chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+    if (!tabs || !tabs.length) {
+      setStatus('No active tab');
+      disableActionButtons();
+      return;
     }
 
-    if (typeof tabId === 'undefined' || tabId === null) {
+    var tabId = tabs[0].id;
+    if (typeof tabId === 'undefined') {
       setStatus('No active tab');
       disableActionButtons();
       return;
@@ -251,29 +213,10 @@ function loadResults() {
       var stored = items[storageKey];
 
       if (!stored || !stored.links || stored.links.length === 0) {
-        // Fall back to in-popup stub detection for testing when nothing was
-        // previously stored by the content script.
-        const context = { document: document };
-        const detection = detect(context);
-
-        if (detection) {
-          stored = extract(context);
-          stored.detection = detection;
-        } else {
-          stored = { links: [], sources: [], detection: null };
-        }
-
-        currentResults = stored;
-        renderLinks(stored.links);
-
-        if (stored.links.length === 0) {
-          setStatus('No video links found on this page.');
-          disableActionButtons();
-        } else {
-          enableActionButtons(stored);
-          setStatus('Detected ' + stored.links.length + ' link' + (stored.links.length === 1 ? '' : 's') + ' (stub)');
-        }
-
+        currentResults = { links: [], sources: [], detection: null };
+        renderLinks([]);
+        setStatus('No video links found on this page.');
+        disableActionButtons();
         return;
       }
 
@@ -311,7 +254,26 @@ function enableActionButtons(results) {
 // Startup.
 // ---------------------------------------------------------------------------
 
-loadResults().catch(function (error) {
-  console.error(error);
-  setStatus('Error loading results.');
-});
+(function () {
+  // Load the shared module from the extension bundle so popup.js uses the same
+  // shared logic as content.js.
+  function loadSharedModule() {
+    var sharedPath = chrome.runtime.getURL('../shared/index.js');
+
+    if (!sharedPath) {
+      console.warn('AutoExtract popup: unable to resolve shared module path.');
+      return;
+    }
+
+    var script = document.createElement('script');
+    script.src = sharedPath;
+    script.async = false;
+    (document.head || document.documentElement).appendChild(script);
+  }
+
+  loadSharedModule();
+  loadResults().catch(function (error) {
+    console.error(error);
+    setStatus('Error loading results.');
+  });
+})();

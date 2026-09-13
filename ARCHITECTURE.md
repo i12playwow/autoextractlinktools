@@ -20,11 +20,20 @@ The core job of the system is to detect supported video player setups on a page 
 - Runs in the browser as a content script and popup.
 - Detects supported sites/players on the active tab.
 - Extracts links from the page DOM and player state accessible to content scripts.
-- Presents results in the popup and forwards selected links to the desktop app.
+- Stores results in `chrome.storage.local` keyed by active tab id.
+- The popup reads those stored results and presents them to the user.
+- The popup forwards the currently loaded results to the desktop app when the user clicks send.
 
 Current scaffold state:
-  - `content.js` and `popup.js` now exist as scaffolds.
-  - The popup UI already expects `#status`, `#links`, `#count-badge`, `#copy-btn`, `#idm-btn`, and `#send-btn`.
+  - `shared/index.js` is the authoritative shared module for the extension.
+  - `content.js` and `popup.js` load it as a script via
+    `chrome.runtime.getURL('../shared/index.js')` instead of duplicating it.
+  - That relative path currently assumes the extension package places
+    `shared/index.js` next to the extension scripts. If packaging moves files,
+    the path needs to match the final layout.
+  - The popup UI expects `#status`, `#links`, `#count-badge`, `#copy-btn`, `#idm-btn`, and `#send-btn`.
+  - The popup no longer runs extraction locally; it relies on results previously
+    stored by the content script for the active tab.
   - IDM behavior is intentionally represented as an integration point but is not implemented yet.
 
 ### Userscript
