@@ -4,25 +4,26 @@
 // userscript. Both browser-side runtimes should use this instead of duplicating
 // site/player-specific parsing.
 //
-// This file is the authoritative shared module. In the Chrome extension it is
-// intended to be loaded as a script from the extension bundle via
-// chrome.runtime.getURL('../shared/index.js') so content.js and popup.js do
-// not duplicate the shared logic.
-//
-// Important deployment constraint:
-//   For the current relative path to resolve inside the extension, the final
-//   extension package must place this file next to content.js and popup.js
-//   under the chrome-extension directory, or the relative path must be updated
-//   when the build/packaging layout is defined.
-//
 // Browser API:
 //   window.AutoExtract.detect(context)
 //   window.AutoExtract.extract(context)
 //
-// Design:
-//   - detect(context): returns site/player metadata if the current page is
-//     supported, otherwise null.
-//   - extract(context): returns links/context for a supported page.
+// Build/packaging path:
+//   The authoritative shared source lives at the repo root:
+//     shared/index.js
+//
+//   The extension build step copies it into the extension package so it can be
+//   loaded as an extension resource:
+//     chrome-extension/build/make-shared.js
+//     -> chrome-extension/shared/index.js
+//
+//   After that copy, content.js and popup.js load it through the extension
+//   bundle as:
+//     chrome.runtime.getURL('../shared/index.js')
+//
+//   That relative path is correct only because the build places this file next
+//   to content.js and popup.js inside chrome-extension/. If the packaging
+//   layout changes, update the build script and the manifest together.
 //
 // Stub behavior (temporary test contract):
 //   - If the page contains elements marked with [data-autoextract], the stubs

@@ -16,3 +16,9 @@ Thumbs.db
 package-DESKTOP-*.json
 package-lock - Copy*.json
 package - Copy*.json
+
+# Generated extension layout
+# The extension build step copies shared/index.js into the extension package.
+# That copied file is generated, so treat it as build output rather than
+# hand-edited source.
+chrome-extension/shared/

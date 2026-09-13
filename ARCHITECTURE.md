@@ -28,9 +28,11 @@ Current scaffold state:
   - `shared/index.js` is the authoritative shared module for the extension.
   - `content.js` and `popup.js` load it as a script via
     `chrome.runtime.getURL('../shared/index.js')` instead of duplicating it.
-  - That relative path currently assumes the extension package places
-    `shared/index.js` next to the extension scripts. If packaging moves files,
-    the path needs to match the final layout.
+  - The extension build step copies that shared module into the extension
+    package at `chrome-extension/shared/index.js` so the relative path becomes
+    real at runtime.
+  - The manifest now declares `shared/index.js` as part of the content script
+    loading order.
   - The popup UI expects `#status`, `#links`, `#count-badge`, `#copy-btn`, `#idm-btn`, and `#send-btn`.
   - The popup no longer runs extraction locally; it relies on results previously
     stored by the content script for the active tab.
@@ -54,6 +56,33 @@ Current scaffold state:
 - **Extension and userscript should remain thin wrappers around the shared module.** They should differ mainly in how they are deployed and how they communicate back to the desktop app.
 - **Don’t mix deployment models.** The extension, userscript, and desktop app are separate runtimes. Shared logic is fine; duplicated copies of site-specific behavior are not.
 
+## Build and packaging
+
+### Shared module layout
+
+- The authoritative shared source lives at the repo root in `shared/index.js`.
+- The extension cannot load that file at runtime through a repo-root path.
+- The extension build step `chrome-extension/build/make-shared.js` copies the
+  shared module into the extension package so it becomes a real extension
+  resource at `chrome-extension/shared/index.js`.
+- After that copy, `content.js` and `popup.js` load the shared module with
+  `chrome.runtime.getURL('../shared/index.js')`, which is correct because the
+  build places the file beside the extension scripts.
+
+### What is source and what is generated
+
+- Source of truth: `shared/index.js`.
+- Build step: `chrome-extension/build/make-shared.js`.
+- Generated output: `chrome-extension/shared/index.js`.
+- The generated output should be treated as build artifact, not hand-edited
+  extension source. If the layout or path ever changes, update the build script
+  and manifest together, not the generated file in isolation.
+
+### Current commands
+
+- `npm run build:extension` — copies the shared module into the extension package.
+- `npm run clean:extension` — removes the generated `chrome-extension/shared/` layout.
+
 ## Communication path
 
 - Browser-side code sends extracted links to the desktop app over localhost HTTP when the app is reachable.
@@ -71,3 +100,4 @@ Current scaffold state:
 - The popup UI already assumes link results, copy JSON, and a “send to desktop” action, so the extension surface is partially defined even though the implementation is not present yet.
 - Extension resources like content scripts and popup scripts still need to exist and be wired up.
 - The extension manifest currently scopes communication to `http://localhost:3456/*`. If the desktop app uses a different port or scheme, update both the manifest and the desktop app together.
+- The shared module is currently copied into the extension package rather than bundled. If more shared files are added later, revisit whether a real bundler or packaging step is warranted.
