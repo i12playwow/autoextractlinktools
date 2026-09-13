@@ -11,7 +11,13 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://www.bilibili.com/*",
+        "https://vimeo.com/*",
+        "http://localhost:*/*",
+        "https://localhost/*"
+      ],
       "js": ["shared/index.js", "content.js"],
       "run_at": "document_idle"
     }

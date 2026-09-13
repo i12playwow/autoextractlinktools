@@ -21,7 +21,10 @@ The core job of the system is to detect supported video player setups on a page 
 - Detects supported sites/players on the active tab.
 - Extracts links from the page DOM and player state accessible to content scripts.
 - Stores results in `chrome.storage.local` keyed by active tab id.
+- Each stored entry includes the page URL and title so later reads can tell whether the stored results are still current.
 - The popup reads those stored results and presents them to the user.
+- If nothing has been stored yet for the active tab, the popup shows an explicit "not run yet" state instead of pretending links were found.
+- If stored results belong to a different page URL, the popup treats them as stale and asks for re-detection.
 - The popup forwards the currently loaded results to the desktop app when the user clicks send.
 
 Current scaffold state:
@@ -33,7 +36,10 @@ Current scaffold state:
     real at runtime.
   - The manifest now declares `shared/index.js` as part of the content script
     loading order.
-  - The popup UI expects `#status`, `#links`, `#count-badge`, `#copy-btn`, `#idm-btn`, and `#send-btn`.
+  - The manifest restricts content script matches to a small explicit host
+    list instead of `<all_urls>`.
+  - The popup UI expects `#status`, `#no-data`, `#not-run`, `#links`, `#count-badge`,
+    `#copy-btn`, `#idm-btn`, `#send-btn`, and `#detect-btn`.
   - The popup no longer runs extraction locally; it relies on results previously
     stored by the content script for the active tab.
   - IDM behavior is intentionally represented as an integration point but is not implemented yet.
@@ -88,6 +94,28 @@ Current scaffold state:
 - Browser-side code sends extracted links to the desktop app over localhost HTTP when the app is reachable.
 - The desktop app is the intended recipient for forwarded links from both the extension and the userscript.
 - If the desktop app is not reachable, browser-side code should degrade predictably instead of failing silently or pretending the send succeeded.
+
+## Desktop bridge contract
+
+- The bridge listens on `127.0.0.1:3456` by default.
+- It accepts `POST /` with a JSON payload.
+- Payloads must be objects with a `links` array, where each link has a non-empty
+  string `url`. That validates the shape important to the core feature without
+  being overly strict about optional metadata.
+- Error responses are kept minimal and consistent: `404` for wrong method/path,
+  `400` for invalid JSON or invalid payload shape, and `503` once shutdown has
+  started.
+- The bridge logs only a summarized view of the payload by default, not the full
+  raw body, so noisy metadata does not inflate logs.
+- Shutdown is handled once, in the `will-quit` handler. `window-all-closed` is
+  kept only as an explicit lifecycle note for non-macOS.
+
+## Extension scope and storage
+
+- Content scripts run only on the explicit host matches defined in the manifest.
+- Storage is scoped per active tab id.
+- Stored entries carry `pageUrl` and `pageTitle` so the popup can identify stale
+  results from other pages.
 
 ## Out of scope for now
 

@@ -45,21 +45,35 @@
     #idm-btn:hover { background: #1b5e20; }
     #send-btn { background: #0f3460; color: #e0e0e0; }
     #send-btn:hover { background: #1a4a7a; }
-    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #send-btn:disabled, #copy-btn:disabled, #idm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #detect-btn { background: #5c4a8a; color: #fff; }
+    #detect-btn:hover { background: #4a3a6e; }
+    #detect-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .badge { font-size: 11px; color: #888; margin-bottom: 6px; }
     #no-data { color: #555; font-style: italic; text-align: center; padding: 20px 0; font-size: 13px; }
+    #not-run {
+      color: #4fc3f7;
+      font-style: italic;
+      text-align: center;
+      padding: 20px 0;
+      font-size: 13px;
+      border: 1px dashed #0f3460;
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
   <h1>AutoExtract Link Tools</h1>
-  <div id="status">Detecting page...</div>
+  <div id="status">Loading results...</div>
   <div id="no-data">No video links found on this page.</div>
+  <div id="not-run">Detection has not run on this page yet.</div>
   <div id="links"></div>
   <div class="badge" id="count-badge"></div>
   <div id="actions">
-    <button id="copy-btn">Copy JSON</button>
+    <button id="copy-btn" disabled>Copy JSON</button>
     <button id="idm-btn" disabled>Open in IDM</button>
     <button id="send-btn" disabled>Send to Desktop</button>
+    <button id="detect-btn" disabled>Detect Now</button>
   </div>
   <script src="popup.js"></script>
 </body>

@@ -4,48 +4,27 @@
 //
 // Responsibilities:
 //   - Detect supported video player setups on the current page.
-//   - Extract available links and expose them to the popup or other extension UI.
+//   - Extract available links and expose them to the popup.
 //
-// This file is a scaffold. It uses the shared detection/extraction interface
-// where practical, but the real extraction logic is not implemented yet.
+// Storage contract:
+//   - Results are stored in chrome.storage.local under one key per active tab.
+//   - Each stored entry includes the page URL and title so the popup can tell
+//     whether the stored results are still current.
 //
 // Communication:
+//   - Detection/extraction runs here.
 //   - Actual forwarding to the desktop app should happen from popup.js or
-//     another orchestration layer, not directly from this content script by
-//     default. Keep the content script focused on detection/extraction and
-//     page interaction.
+//     another orchestration layer, not by default from this content script.
 //
 // TODO:
-//   - Import and use shared/index.js from the extension build.
-//   - Decide how detected links are stored/shown to the popup.
-//   - Handle page changes, navigation, and dynamic players if needed.
+//   - Replace stub detection with real site/player-specific rules.
+//   - Handle navigation and dynamic players if needed.
+//   - Decide whether stored results should be invalidated on page changes.
 
 'use strict';
 
-// ---------------------------------------------------------------------------
-// Shared module.
-//
-// Loaded from the extension bundle so content.js and popup.js use the same
-// shared logic without duplicating it.
-// ---------------------------------------------------------------------------
-
 (function () {
-  // Wait for the shared module to be available, then run detection/extraction.
-  function run() {
-    if (!window.AutoExtract) {
-      console.warn('AutoExtract content script: shared module not loaded.');
-      return;
-    }
-
-    var context = {
-      document: document
-    };
-
-    var detection = window.AutoExtract.detect(context);
-    var results = detection ? window.AutoExtract.extract(context) : { links: [], sources: [] };
-
-    results.detection = detection;
-
+  function storeForActiveTab(results, pageUrl, pageTitle) {
     if (!chrome.tabs || !chrome.tabs.query) {
       console.warn('AutoExtract content script: tabs API not available.');
       return;
@@ -63,22 +42,60 @@
         return;
       }
 
+      var entry = {
+        detection: results.detection || null,
+        links: results.links || [],
+        sources: results.sources || [],
+        pageUrl: pageUrl || '',
+        pageTitle: pageTitle || '',
+        storedAt: new Date().toISOString()
+      };
+
       chrome.storage.local.set({
-        ['autoextract_results_' + tabId]: results
+        ['autoextract_results_' + tabId]: entry
       }, function () {
         if (chrome.runtime.lastError) {
           console.warn('AutoExtract: failed to store results.', chrome.runtime.lastError);
           return;
         }
-        console.log('AutoExtract: stored results for tab', tabId, '(', results.links.length, 'links)');
+        console.log(
+          'AutoExtract: stored results for tab',
+          tabId,
+          '(',
+          entry.links.length,
+          'links,',
+          entry.pageUrl,
+          ')'
+        );
       });
     });
+  }
+
+  function run() {
+    if (!window.AutoExtract) {
+      console.warn('AutoExtract content script: shared module not loaded.');
+      return;
+    }
+
+    var context = {
+      document: document
+    };
+
+    var detection = window.AutoExtract.detect(context);
+    var results = detection ? window.AutoExtract.extract(context) : { links: [], sources: [] };
+
+    results.detection = detection;
+
+    storeForActiveTab(
+      results,
+      location.href,
+      document.title || ''
+    );
   }
 
   if (window.AutoExtract) {
     run();
   } else {
-    // The shared script may still be loading.
     window.addEventListener('load', run);
   }
 })();
@@ -87,7 +104,6 @@
 (function () {
   var sharedPath = chrome.runtime.getURL('../shared/index.js');
 
-  // Guard against environments where the extension path is not available.
   if (!sharedPath) {
     console.warn('AutoExtract content script: unable to resolve shared module path.');
     return;
