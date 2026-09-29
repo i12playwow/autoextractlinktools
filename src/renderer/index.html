@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'self'; script-src 'self'">
+  <title>AutoExtract Link Tools</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header id="header">
+    <div class="title-group">
+      <h1>AutoExtract Links</h1>
+      <span id="bridge-status" class="status">connecting to bridge&hellip;</span>
+    </div>
+    <div class="controls">
+      <button id="clear-btn" type="button" title="Remove all listed links">Clear</button>
+    </div>
+  </header>
+
+  <main id="list" role="list" aria-label="Received links"></main>
+
+  <div id="empty" class="empty hidden">
+    <p>No links received yet.</p>
+    <p class="hint">Start the desktop bridge, open a supported video page with the
+    AutoExtract extension, and forwarded links will appear here live.</p>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

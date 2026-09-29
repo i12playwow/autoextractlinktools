@@ -1,0 +1,31 @@
+{
+  "detected": {
+    "supported": true,
+    "type": "stub",
+    "markerCount": 2
+  },
+  "links": [
+    {
+      "server": "stub",
+      "type": "video",
+      "url": "http://example.com/video.mp4"
+    },
+    {
+      "server": "stub",
+      "type": "audio",
+      "url": "http://example.com/audio.m4a"
+    }
+  ],
+  "sources": [
+    {
+      "element": "div",
+      "attributes": [
+        "data-autoextract",
+        "data-autoextract-url"
+      ]
+    }
+  ],
+  "pageUrl": "http://127.0.0.1:9999/test-pages/index.html",
+  "pageTitle": "AutoExtract test page",
+  "sentAt": null
+}

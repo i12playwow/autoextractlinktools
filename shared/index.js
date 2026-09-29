@@ -17,61 +17,193 @@
 //     chrome-extension/build/make-shared.js
 //     -> chrome-extension/shared/index.js
 //
-//   After that copy, content.js and popup.js load it through the extension
-//   bundle as:
-//     chrome.runtime.getURL('../shared/index.js')
+//   In the extension, the manifest lists shared/index.js before content.js (and
+//   before popup.js's loader), so window.AutoExtract is available directly in
+//   the content-script isolated world. Do not inject this file into the page:
+//   page-world copies are invisible to the content script and MV3 blocks
+//   chrome-extension:// script tags without web_accessible_resources.
 //
-//   That relative path is correct only because the build places this file next
-//   to content.js and popup.js inside chrome-extension/. If the packaging
-//   layout changes, update the build script and the manifest together.
-//
-// Stub behavior (temporary test contract):
-//   - If the page contains elements marked with [data-autoextract], the stubs
-//     treat them as fake link sources for testing.
-//   - data-autoextract-url, data-autoextract-type, and data-autoextract-server
-//     attributes are used when present.
-//   - Otherwise detect() returns null and extract() returns empty results.
+// Detection modes (in precedence order):
+//   1. Stub contract (temporary, for tests):
+//      If the page contains elements marked with [data-autoextract], they are
+//      treated as explicit fake link sources:
+//        - data-autoextract-url, data-autoextract-type, and
+//          data-autoextract-server attributes are used when present.
+//      This mode is unchanged so test-pages/_bridge_expected.json stays valid.
+//   2. YouTube (site-specific):
+//      On *.youtube.com pages, the inline script assigning
+//      ytInitialPlayerResponse is located in the DOM and parsed (content
+//      scripts cannot read page JS globals, but they can read inline script
+//      text). streamingData.formats, streamingData.adaptiveFormats, and the
+//      HLS/DASH manifest URLs are emitted as links. Formats gated behind
+//      signatureCipher are counted but never emitted: forwarding them without
+//      deciphering would produce dead 403 URLs.
+//   3. Generic media scan (fallback on every page):
+//      The module scans for media on any page:
+//        - <video>/<audio> elements (src attribute, or nested <source> children)
+//        - standalone <source> elements
+//        - anchors (<a href>) pointing at media file extensions
+//      blob: and http(s) URLs are included; data: URLs are skipped because they
+//      are not forwardable links. On YouTube specifically, blob: URLs are
+//      excluded even in the fallback, because the player streams via MSE and
+//      blob URLs are unusable outside the page.
 //
 // TODO:
-//   - Define the "context" argument explicitly (window, document, player state).
-//   - Replace stub detection with real site/player-specific rules.
-//   - Decide whether extracted links should be normalized/validated here.
+//   - Add more site/player-specific rules (Bilibili, Vimeo) on top of the
+//     generic scan.
+//   - Optional: implement signatureCipher deciphering (requires fetching and
+//     evaluating YouTube player code; deliberately out of scope for now).
 
 'use strict';
 
 (function () {
-  function detect(context) {
-    // TODO: replace with real supported-site detection.
-    if (!context || !context.document) {
+  var MEDIA_EXTENSIONS = {
+    // video
+    mp4: 'video', m4v: 'video', webm: 'video', mov: 'video', mkv: 'video',
+    avi: 'video', ogv: 'video', '3gp': 'video', flv: 'video', ts: 'video',
+    m3u8: 'video', mpd: 'video',
+    // audio
+    m4a: 'audio', mp3: 'audio', aac: 'audio', ogg: 'audio', oga: 'audio',
+    wav: 'audio', flac: 'audio', opus: 'audio'
+  };
+
+  function safeParseUrl(raw, base) {
+    if (typeof raw !== 'string' || raw.length === 0) {
       return null;
     }
-
-    const markers = context.document.querySelectorAll('[data-autoextract]');
-    if (markers.length > 0) {
-      return {
-        supported: true,
-        type: 'stub',
-        markerCount: markers.length
-      };
+    try {
+      return new URL(raw, base || undefined);
+    } catch (error) {
+      return null;
     }
+  }
 
+  function classifyUrl(urlObj) {
+    var match = urlObj.pathname.match(/\.([a-z0-9]+)$/i);
+    if (!match) {
+      return null;
+    }
+    return MEDIA_EXTENSIONS[match[1].toLowerCase()] || null;
+  }
+
+  function shouldIncludeUrl(urlObj) {
+    return (
+      urlObj.protocol === 'http:' ||
+      urlObj.protocol === 'https:' ||
+      urlObj.protocol === 'blob:'
+    );
+  }
+
+  function getAttr(el, name) {
+    if (el && typeof el.getAttribute === 'function') {
+      var value = el.getAttribute(name);
+      return typeof value === 'string' && value.length > 0 ? value : null;
+    }
     return null;
   }
 
-  function extract(context) {
-    // TODO: replace with real extraction once detection is implemented.
-    const links = [];
-    const sources = [];
+  function tagName(el) {
+    return el && el.tagName ? String(el.tagName).toLowerCase() : 'unknown';
+  }
 
-    if (!context || !context.document) {
-      return { links, sources };
+  function attributeNames(el) {
+    if (!el || !el.attributes) {
+      return [];
+    }
+    return Array.prototype.map.call(el.attributes, function (attr) {
+      return attr.name;
+    });
+  }
+
+  function queryAll(doc, selector) {
+    var result = doc.querySelectorAll(selector);
+    return result ? Array.prototype.slice.call(result) : [];
+  }
+
+  function resolveBase(context) {
+    if (context && context.location && context.location.href) {
+      return context.location.href;
+    }
+    if (context && context.document && context.document.location && context.document.location.href) {
+      return context.document.location.href;
+    }
+    return undefined;
+  }
+
+  // Scan the document for generic media candidates. Returns a list of
+  // { kind, el, raw, base } where kind is 'video', 'audio', or a classified
+  // media type for anchors.
+  function scanMedia(context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return [];
     }
 
-    const markers = context.document.querySelectorAll('[data-autoextract]');
-    markers.forEach((marker) => {
-      const url = marker.getAttribute('data-autoextract-url') || marker.getAttribute('href') || '';
-      const type = marker.getAttribute('data-autoextract-type') || marker.getAttribute('data-autoextract') || 'link';
-      const server = marker.getAttribute('data-autoextract-server') || 'stub';
+    var base = resolveBase(context);
+    var items = [];
+
+    queryAll(doc, 'video, audio').forEach(function (media) {
+      var kind = tagName(media);
+      var src = getAttr(media, 'src');
+      if (src) {
+        items.push({ kind: kind, el: media, raw: src, base: base });
+      }
+      queryAll(media, 'source').forEach(function (source) {
+        var sourceSrc = getAttr(source, 'src');
+        if (sourceSrc) {
+          items.push({ kind: kind, el: source, raw: sourceSrc, base: base });
+        }
+      });
+    });
+
+    queryAll(doc, 'source').forEach(function (source) {
+      var src = getAttr(source, 'src');
+      if (src) {
+        var parent = source.parentElement || source.parentNode;
+        items.push({
+          kind: parent && parent.tagName ? tagName(parent) : 'media',
+          el: source,
+          raw: src,
+          base: base
+        });
+      }
+    });
+
+    queryAll(doc, 'a[href]').forEach(function (anchor) {
+      var href = getAttr(anchor, 'href');
+      var urlObj = safeParseUrl(href, base);
+      if (!urlObj) {
+        return;
+      }
+      var kind = classifyUrl(urlObj);
+      if (kind) {
+        items.push({ kind: kind, el: anchor, raw: href, base: base });
+      }
+    });
+
+    return items;
+  }
+
+  function hasMarkers(context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return false;
+    }
+    var markers = doc.querySelectorAll('[data-autoextract]');
+    return !!(markers && markers.length > 0);
+  }
+
+  // Stub contract extraction: [data-autoextract] markers are explicit fake
+  // link sources. Behavior is intentionally identical to the original stub.
+  function extractStub(context) {
+    var doc = context.document;
+    var links = [];
+    var sources = [];
+
+    queryAll(doc, '[data-autoextract]').forEach(function (marker) {
+      var url = marker.getAttribute('data-autoextract-url') || marker.getAttribute('href') || '';
+      var type = marker.getAttribute('data-autoextract-type') || marker.getAttribute('data-autoextract') || 'link';
+      var server = marker.getAttribute('data-autoextract-server') || 'stub';
 
       if (url) {
         links.push({
@@ -82,18 +214,424 @@
       }
 
       sources.push({
-        element: marker.tagName.toLowerCase(),
-        attributes: Array.from(marker.attributes).map((attr) => attr.name)
+        element: tagName(marker),
+        attributes: attributeNames(marker)
       });
     });
 
-    return { links, sources };
+    return { links: links, sources: sources };
+  }
+
+  // ---------------------------------------------------------------------------
+  // YouTube site-specific extraction
+  // ---------------------------------------------------------------------------
+  //
+  // Watch pages embed the player payload as an inline script assigning
+  // ytInitialPlayerResponse. Content scripts cannot see page-world JS globals,
+  // but they can read inline script text from the DOM, so the assignment is
+  // located and the JSON object is extracted with a string-and-brace-aware
+  // scan, then JSON.parse'd.
+  //
+  // Ciphered formats (signatureCipher) are counted but never emitted: turning
+  // them into links would require the player's deciphering algorithm, which
+  // changes across player releases and needs fetching/evaluating player code.
+
+  var YOUTUBE_HOST_PATTERN = /(^|\.)youtube\.com$/i;
+
+  function isYouTubeHost(hostname) {
+    return typeof hostname === 'string' && YOUTUBE_HOST_PATTERN.test(hostname);
+  }
+
+  function contextHost(context) {
+    if (context && context.location && context.location.href) {
+      var parsed = safeParseUrl(context.location.href);
+      if (parsed) {
+        return parsed.hostname;
+      }
+    }
+    return null;
+  }
+
+  // Extracts the JSON object assigned to `marker` inside script text,
+  // balancing braces while respecting string literals and escapes.
+  function extractJsonAssignment(text, marker) {
+    if (typeof text !== 'string') {
+      return null;
+    }
+    var markerIndex = text.indexOf(marker);
+    if (markerIndex === -1) {
+      return null;
+    }
+    var start = text.indexOf('{', markerIndex);
+    if (start === -1) {
+      return null;
+    }
+    var depth = 0;
+    var inString = false;
+    var quote = '';
+    var escaped = false;
+    for (var i = start; i < text.length; i++) {
+      var ch = text.charAt(i);
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === quote) {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inString = true;
+        quote = ch;
+        continue;
+      }
+      if (ch === '{') {
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          return text.slice(start, i + 1);
+        }
+      }
+    }
+    return null;
+  }
+
+  function parsePlayerResponse(context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return null;
+    }
+    var scripts = queryAll(doc, 'script');
+    for (var i = 0; i < scripts.length; i++) {
+      var el = scripts[i];
+      var text = el && typeof el.textContent === 'string' ? el.textContent : '';
+      if (text.indexOf('ytInitialPlayerResponse') === -1) {
+        continue;
+      }
+      var json = extractJsonAssignment(text, 'ytInitialPlayerResponse');
+      if (!json) {
+        continue;
+      }
+      try {
+        var parsed = JSON.parse(json);
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      } catch (error) {
+        // Malformed or truncated assignment: try the next script.
+      }
+    }
+    return null;
+  }
+
+  function mimeContainer(mimeType) {
+    var match = typeof mimeType === 'string' ? mimeType.match(/^(\w+)\/([\w0-9.-]+)/) : null;
+    if (!match) {
+      return null;
+    }
+    return { kind: match[1], container: match[2] };
+  }
+
+  function mimeCodecs(mimeType) {
+    var match = typeof mimeType === 'string' ? mimeType.match(/codecs="?([^"]*)"?/) : null;
+    return match ? match[1] : null;
+  }
+
+  // Converts one streamingData format entry into a link, or null when the
+  // entry is unusable (ciphered, missing URL, or non-http transport).
+  function youTubeLinkFromFormat(format) {
+    if (!format || typeof format !== 'object') {
+      return null;
+    }
+    if (typeof format.url !== 'string' || format.url.length === 0) {
+      return null; // signatureCipher-gated or otherwise URL-less
+    }
+    var parsed = safeParseUrl(format.url);
+    if (!parsed || !shouldIncludeUrl(parsed)) {
+      return null;
+    }
+
+    var mime = mimeContainer(format.mimeType);
+    var type = 'media';
+    if (mime) {
+      if (mime.kind === 'audio') {
+        type = 'audio';
+      } else if (mime.kind === 'video') {
+        type = 'video';
+      }
+    }
+
+    var link = {
+      server: 'YouTube',
+      type: type,
+      url: parsed.href
+    };
+
+    if (format.itag !== undefined && format.itag !== null) {
+      link.itag = String(format.itag);
+    }
+    if (mime) {
+      link.container = mime.container;
+    }
+    var codecs = mimeCodecs(format.mimeType);
+    if (codecs) {
+      link.codecs = codecs;
+    }
+    if (typeof format.qualityLabel === 'string' && format.qualityLabel) {
+      link.quality = format.qualityLabel;
+    } else if (typeof format.quality === 'string' && format.quality) {
+      link.quality = format.quality;
+    }
+    if (typeof format.bitrate === 'number' && format.bitrate > 0) {
+      link.bitrate = format.bitrate;
+    }
+    if (typeof format.width === 'number' && typeof format.height === 'number') {
+      link.size = format.width + 'x' + format.height;
+    }
+    if (typeof format.approxDurationMs === 'string' && format.approxDurationMs) {
+      link.durationMs = format.approxDurationMs;
+    }
+
+    return link;
+  }
+
+  // Returns { links, sources, meta } or null when no YouTube player payload
+  // can be extracted. meta carries counts for detection and diagnostics.
+  function extractYouTube(context) {
+    var playerResponse = parsePlayerResponse(context);
+    if (!playerResponse) {
+      return null;
+    }
+
+    var streamingData = playerResponse.streamingData;
+    if (!streamingData || typeof streamingData !== 'object') {
+      return null;
+    }
+
+    var links = [];
+    var seen = {};
+    var cipheredCount = 0;
+
+    var formats = Array.isArray(streamingData.formats) ? streamingData.formats : [];
+    var adaptive = Array.isArray(streamingData.adaptiveFormats) ? streamingData.adaptiveFormats : [];
+
+    function addFormat(format) {
+      var link = youTubeLinkFromFormat(format);
+      if (link) {
+        if (!seen[link.url]) {
+          seen[link.url] = true;
+          links.push(link);
+        }
+      } else if (format && typeof format === 'object' && !format.url &&
+                 (format.signatureCipher || format.cipher)) {
+        cipheredCount++;
+      }
+    }
+
+    formats.forEach(addFormat);
+    adaptive.forEach(addFormat);
+
+    if (typeof streamingData.hlsManifestUrl === 'string' && streamingData.hlsManifestUrl) {
+      var hls = safeParseUrl(streamingData.hlsManifestUrl);
+      if (hls && shouldIncludeUrl(hls) && !seen[hls.href]) {
+        seen[hls.href] = true;
+        links.push({ server: 'YouTube', type: 'hls', url: hls.href });
+      }
+    }
+
+    if (typeof streamingData.dashManifestUrl === 'string' && streamingData.dashManifestUrl) {
+      var dash = safeParseUrl(streamingData.dashManifestUrl);
+      if (dash && shouldIncludeUrl(dash) && !seen[dash.href]) {
+        seen[dash.href] = true;
+        links.push({ server: 'YouTube', type: 'dash', url: dash.href });
+      }
+    }
+
+    if (links.length === 0) {
+      return null;
+    }
+
+    var usedAttributes = [];
+    if (formats.length > 0) {
+      usedAttributes.push('streamingData.formats');
+    }
+    if (adaptive.length > 0) {
+      usedAttributes.push('streamingData.adaptiveFormats');
+    }
+    if (typeof streamingData.hlsManifestUrl === 'string' && streamingData.hlsManifestUrl) {
+      usedAttributes.push('streamingData.hlsManifestUrl');
+    }
+    if (typeof streamingData.dashManifestUrl === 'string' && streamingData.dashManifestUrl) {
+      usedAttributes.push('streamingData.dashManifestUrl');
+    }
+
+    var videoId = playerResponse.videoDetails && playerResponse.videoDetails.videoId
+      ? playerResponse.videoDetails.videoId
+      : null;
+
+    return {
+      links: links,
+      sources: [{ element: 'ytInitialPlayerResponse', attributes: usedAttributes }],
+      meta: {
+        videoId: videoId,
+        formatCount: formats.length,
+        adaptiveFormatCount: adaptive.length,
+        cipheredCount: cipheredCount
+      }
+    };
+  }
+
+  // Generic extraction: real media elements and media anchors, deduplicated
+  // by fully-resolved URL.
+  function extractGeneric(context) {
+    var items = scanMedia(context);
+    var seen = {};
+    var links = [];
+    var sources = [];
+
+    items.forEach(function (item) {
+      var urlObj = safeParseUrl(item.raw, item.base);
+      if (!urlObj || !shouldIncludeUrl(urlObj)) {
+        return;
+      }
+
+      var resolved = urlObj.href;
+      if (seen[resolved]) {
+        return;
+      }
+      seen[resolved] = true;
+
+      var type = classifyUrl(urlObj) || (item.kind === 'video' || item.kind === 'audio' ? item.kind : 'link');
+      var server = urlObj.hostname ? urlObj.hostname.replace(/^www\./, '') : 'direct';
+
+      links.push({
+        server: server,
+        type: type,
+        url: resolved
+      });
+
+      sources.push({
+        element: tagName(item.el),
+        attributes: attributeNames(item.el)
+      });
+    });
+
+    return { links: links, sources: sources };
+  }
+
+  function detect(context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return null;
+    }
+
+    // Stub contract takes precedence so test pages behave exactly as before.
+    var markers = doc.querySelectorAll('[data-autoextract]');
+    if (markers.length > 0) {
+      return {
+        supported: true,
+        type: 'stub',
+        markerCount: markers.length
+      };
+    }
+
+    // YouTube site-specific detection.
+    var host = contextHost(context);
+    if (isYouTubeHost(host || '')) {
+      var ytResult = extractYouTube(context);
+      if (ytResult && ytResult.links.length > 0) {
+        return {
+          supported: true,
+          type: 'youtube',
+          videoId: ytResult.meta.videoId,
+          linkCount: ytResult.links.length,
+          cipheredCount: ytResult.meta.cipheredCount
+        };
+      }
+      // No player payload: fall through to the generic scan.
+    }
+
+    var items = scanMedia(context);
+    if (items.length === 0) {
+      return null;
+    }
+
+    var counts = {};
+    items.forEach(function (item) {
+      counts[item.kind] = (counts[item.kind] || 0) + 1;
+    });
+
+    return {
+      supported: true,
+      type: 'generic',
+      counts: counts
+    };
+  }
+
+  function extract(context) {
+    if (!context || !context.document) {
+      return { links: [], sources: [] };
+    }
+
+    if (hasMarkers(context)) {
+      return extractStub(context);
+    }
+
+    var host = contextHost(context);
+    if (isYouTubeHost(host || '')) {
+      // On YouTube the player streams via MSE blob: URLs, which are only
+      // valid inside the originating page, so the fallback drops them.
+      var generic = extractGeneric(context);
+      var genericLinks = [];
+      var genericSources = [];
+      generic.links.forEach(function (link, index) {
+        if (link.url.indexOf('blob:') !== 0) {
+          genericLinks.push(link);
+          genericSources.push(generic.sources[index]);
+        }
+      });
+
+      var ytResult = extractYouTube(context);
+      if (ytResult) {
+        var seen = {};
+        ytResult.links.forEach(function (link) {
+          seen[link.url] = true;
+        });
+        var extra = genericLinks.filter(function (link) {
+          return !seen[link.url];
+        });
+        return {
+          links: ytResult.links.concat(extra),
+          sources: ytResult.sources,
+          meta: ytResult.meta
+        };
+      }
+
+      return { links: genericLinks, sources: genericSources };
+    }
+
+    return extractGeneric(context);
   }
 
   if (typeof window !== 'undefined') {
     window.AutoExtract = {
       detect: detect,
-      extract: extract
+      extract: extract,
+      // Exposed for unit tests and tooling; not part of the public contract.
+      _internal: {
+        safeParseUrl: safeParseUrl,
+        classifyUrl: classifyUrl,
+        shouldIncludeUrl: shouldIncludeUrl,
+        MEDIA_EXTENSIONS: MEDIA_EXTENSIONS,
+        isYouTubeHost: isYouTubeHost,
+        contextHost: contextHost,
+        extractJsonAssignment: extractJsonAssignment,
+        parsePlayerResponse: parsePlayerResponse,
+        extractYouTube: extractYouTube
+      }
     };
   }
 })();

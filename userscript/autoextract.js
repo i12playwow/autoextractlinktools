@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AutoExtract Link Tools
 // @namespace    https://github.com/autoextractlinktools
-// @version      1.0.0
-// @description  Detect supported video player setups on the page, extract links,
+// @version      1.1.0
+// @description  Detect video players and media links on the page, extract links,
 //               and forward them to the local desktop app at http://localhost:3456/
 // @match        https://www.youtube.com/*
 // @match        https://www.bilibili.com/*
@@ -22,32 +22,35 @@
 // site/player-specific parsing is not duplicated across runtimes.
 //
 // Shared logic note:
-//   - This userscript currently inlines the shared detect/extract behavior so it
-//     can run without a separate build output or hosted @require URL.
+//   - This userscript inlines the shared detect/extract behavior so it can run
+//     without a separate build output or hosted @require URL.
 //   - The authoritative shared source is still repo root shared/index.js.
 //   - If the shared module changes, update this inlined copy from shared/index.js
 //     rather than evolving these two independently.
 //
 // Current behavior:
 //   - Runs on page load after the DOM is ready.
-//   - Detects supported page state using the shared interface.
-//   - Extracts links using the shared interface.
+//   - Detection modes (matching shared/index.js):
+//       1. Stub contract: [data-autoextract] markers are fake link sources
+//          (data-autoextract-url/-type/-server attributes) for testing.
+//       2. YouTube: parses the inline ytInitialPlayerResponse script for
+//          streamingData formats and HLS/DASH manifests. signatureCipher-
+//          gated formats are counted but never emitted (no deciphering).
+//       3. Generic media scan: <video>/<audio> elements and their <source>
+//          children, standalone <source> elements, and anchors whose href
+//          points at a known media file extension. blob:/http(s) URLs are
+//          included; data: URLs are skipped. On YouTube, blob: URLs are
+//          excluded because MSE blob URLs are unusable outside the page.
 //   - Shows a small in-page status indicator so behavior is observable without
 //     devtools.
 //   - Forwards results to the desktop app over localhost if it is reachable.
 //   - Degrades predictably if the desktop app is not reachable.
 //
-// Communication:
-//   - The desktop app is the intended recipient for forwarded links.
-//   - If the desktop app is not reachable, this userscript logs and reports the
-//     failure instead of pretending the send succeeded.
-//
 // TODO:
 //   - Replace the inlined shared logic with a proper shared import path once a
 //     userscript build or hosted @require URL exists.
-//   - Replace stub detection with real site/player-specific extraction.
-//   - Decide whether the userscript should expose copy/clipboard behavior or a
-//     more visible UI in addition to forwarding.
+//   - Add site/player-specific rules (YouTube, Bilibili, Vimeo) on top of the
+//     generic scan.
 
 (function () {
   'use strict';
@@ -56,33 +59,145 @@
   // Shared detection/extraction interface (inlined from shared/index.js).
   // ---------------------------------------------------------------------------
 
-  var detect = function (context) {
-    if (!context || !context.document) {
-      return null;
-    }
-
-    var markers = context.document.querySelectorAll('[data-autoextract]');
-    if (markers.length > 0) {
-      return {
-        supported: true,
-        type: 'stub',
-        markerCount: markers.length
-      };
-    }
-
-    return null;
+  var MEDIA_EXTENSIONS = {
+    // video
+    mp4: 'video', m4v: 'video', webm: 'video', mov: 'video', mkv: 'video',
+    avi: 'video', ogv: 'video', '3gp': 'video', flv: 'video', ts: 'video',
+    m3u8: 'video', mpd: 'video',
+    // audio
+    m4a: 'audio', mp3: 'audio', aac: 'audio', ogg: 'audio', oga: 'audio',
+    wav: 'audio', flac: 'audio', opus: 'audio'
   };
 
-  var extract = function (context) {
+  function safeParseUrl(raw, base) {
+    if (typeof raw !== 'string' || raw.length === 0) {
+      return null;
+    }
+    try {
+      return new URL(raw, base || undefined);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function classifyUrl(urlObj) {
+    var match = urlObj.pathname.match(/\.([a-z0-9]+)$/i);
+    if (!match) {
+      return null;
+    }
+    return MEDIA_EXTENSIONS[match[1].toLowerCase()] || null;
+  }
+
+  function shouldIncludeUrl(urlObj) {
+    return (
+      urlObj.protocol === 'http:' ||
+      urlObj.protocol === 'https:' ||
+      urlObj.protocol === 'blob:'
+    );
+  }
+
+  function getAttr(el, name) {
+    if (el && typeof el.getAttribute === 'function') {
+      var value = el.getAttribute(name);
+      return typeof value === 'string' && value.length > 0 ? value : null;
+    }
+    return null;
+  }
+
+  function tagName(el) {
+    return el && el.tagName ? String(el.tagName).toLowerCase() : 'unknown';
+  }
+
+  function attributeNames(el) {
+    if (!el || !el.attributes) {
+      return [];
+    }
+    return Array.prototype.map.call(el.attributes, function (attr) {
+      return attr.name;
+    });
+  }
+
+  function queryAll(doc, selector) {
+    var result = doc.querySelectorAll(selector);
+    return result ? Array.prototype.slice.call(result) : [];
+  }
+
+  function resolveBase(context) {
+    if (context && context.location && context.location.href) {
+      return context.location.href;
+    }
+    if (context && context.document && context.document.location && context.document.location.href) {
+      return context.document.location.href;
+    }
+    return undefined;
+  }
+
+  function scanMedia(context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return [];
+    }
+
+    var base = resolveBase(context);
+    var items = [];
+
+    queryAll(doc, 'video, audio').forEach(function (media) {
+      var kind = tagName(media);
+      var src = getAttr(media, 'src');
+      if (src) {
+        items.push({ kind: kind, el: media, raw: src, base: base });
+      }
+      queryAll(media, 'source').forEach(function (source) {
+        var sourceSrc = getAttr(source, 'src');
+        if (sourceSrc) {
+          items.push({ kind: kind, el: source, raw: sourceSrc, base: base });
+        }
+      });
+    });
+
+    queryAll(doc, 'source').forEach(function (source) {
+      var src = getAttr(source, 'src');
+      if (src) {
+        var parent = source.parentElement || source.parentNode;
+        items.push({
+          kind: parent && parent.tagName ? tagName(parent) : 'media',
+          el: source,
+          raw: src,
+          base: base
+        });
+      }
+    });
+
+    queryAll(doc, 'a[href]').forEach(function (anchor) {
+      var href = getAttr(anchor, 'href');
+      var urlObj = safeParseUrl(href, base);
+      if (!urlObj) {
+        return;
+      }
+      var kind = classifyUrl(urlObj);
+      if (kind) {
+        items.push({ kind: kind, el: anchor, raw: href, base: base });
+      }
+    });
+
+    return items;
+  }
+
+  function hasMarkers(context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return false;
+    }
+    var markers = doc.querySelectorAll('[data-autoextract]');
+    return !!(markers && markers.length > 0);
+  }
+
+  function extractStub(context) {
+    var doc = context.document;
     var links = [];
     var sources = [];
 
-    if (!context || !context.document) {
-      return { links: links, sources: sources };
-    }
-
-    var markers = context.document.querySelectorAll('[data-autoextract]');
-    markers.forEach(function (marker) {
+    queryAll(doc, '[data-autoextract]').forEach(function (marker) {
       var url = marker.getAttribute('data-autoextract-url') || marker.getAttribute('href') || '';
       var type = marker.getAttribute('data-autoextract-type') || marker.getAttribute('data-autoextract') || 'link';
       var server = marker.getAttribute('data-autoextract-server') || 'stub';
@@ -96,14 +211,394 @@
       }
 
       sources.push({
-        element: marker.tagName.toLowerCase(),
-        attributes: Array.from(marker.attributes).map(function (attr) {
-          return attr.name;
-        })
+        element: tagName(marker),
+        attributes: attributeNames(marker)
       });
     });
 
     return { links: links, sources: sources };
+  }
+
+  // ---------------------------------------------------------------------------
+  // YouTube site-specific extraction (inlined from shared/index.js).
+  // ---------------------------------------------------------------------------
+
+  var YOUTUBE_HOST_PATTERN = /(^|\.)youtube\.com$/i;
+
+  function isYouTubeHost(hostname) {
+    return typeof hostname === 'string' && YOUTUBE_HOST_PATTERN.test(hostname);
+  }
+
+  function contextHost(context) {
+    if (context && context.location && context.location.href) {
+      var parsed = safeParseUrl(context.location.href);
+      if (parsed) {
+        return parsed.hostname;
+      }
+    }
+    return null;
+  }
+
+  // Extracts the JSON object assigned to `marker` inside script text,
+  // balancing braces while respecting string literals and escapes.
+  function extractJsonAssignment(text, marker) {
+    if (typeof text !== 'string') {
+      return null;
+    }
+    var markerIndex = text.indexOf(marker);
+    if (markerIndex === -1) {
+      return null;
+    }
+    var start = text.indexOf('{', markerIndex);
+    if (start === -1) {
+      return null;
+    }
+    var depth = 0;
+    var inString = false;
+    var quote = '';
+    var escaped = false;
+    for (var i = start; i < text.length; i++) {
+      var ch = text.charAt(i);
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === quote) {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inString = true;
+        quote = ch;
+        continue;
+      }
+      if (ch === '{') {
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          return text.slice(start, i + 1);
+        }
+      }
+    }
+    return null;
+  }
+
+  function parsePlayerResponse(context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return null;
+    }
+    var scripts = queryAll(doc, 'script');
+    for (var i = 0; i < scripts.length; i++) {
+      var el = scripts[i];
+      var text = el && typeof el.textContent === 'string' ? el.textContent : '';
+      if (text.indexOf('ytInitialPlayerResponse') === -1) {
+        continue;
+      }
+      var json = extractJsonAssignment(text, 'ytInitialPlayerResponse');
+      if (!json) {
+        continue;
+      }
+      try {
+        var parsed = JSON.parse(json);
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      } catch (error) {
+        // Malformed or truncated assignment: try the next script.
+      }
+    }
+    return null;
+  }
+
+  function mimeContainer(mimeType) {
+    var match = typeof mimeType === 'string' ? mimeType.match(/^(\w+)\/([\w0-9.-]+)/) : null;
+    if (!match) {
+      return null;
+    }
+    return { kind: match[1], container: match[2] };
+  }
+
+  function mimeCodecs(mimeType) {
+    var match = typeof mimeType === 'string' ? mimeType.match(/codecs="?([^"]*)"?/) : null;
+    return match ? match[1] : null;
+  }
+
+  // Converts one streamingData format entry into a link, or null when the
+  // entry is unusable (ciphered, missing URL, or non-http transport).
+  function youTubeLinkFromFormat(format) {
+    if (!format || typeof format !== 'object') {
+      return null;
+    }
+    if (typeof format.url !== 'string' || format.url.length === 0) {
+      return null; // signatureCipher-gated or otherwise URL-less
+    }
+    var parsed = safeParseUrl(format.url);
+    if (!parsed || !shouldIncludeUrl(parsed)) {
+      return null;
+    }
+
+    var mime = mimeContainer(format.mimeType);
+    var type = 'media';
+    if (mime) {
+      if (mime.kind === 'audio') {
+        type = 'audio';
+      } else if (mime.kind === 'video') {
+        type = 'video';
+      }
+    }
+
+    var link = {
+      server: 'YouTube',
+      type: type,
+      url: parsed.href
+    };
+
+    if (format.itag !== undefined && format.itag !== null) {
+      link.itag = String(format.itag);
+    }
+    if (mime) {
+      link.container = mime.container;
+    }
+    var codecs = mimeCodecs(format.mimeType);
+    if (codecs) {
+      link.codecs = codecs;
+    }
+    if (typeof format.qualityLabel === 'string' && format.qualityLabel) {
+      link.quality = format.qualityLabel;
+    } else if (typeof format.quality === 'string' && format.quality) {
+      link.quality = format.quality;
+    }
+    if (typeof format.bitrate === 'number' && format.bitrate > 0) {
+      link.bitrate = format.bitrate;
+    }
+    if (typeof format.width === 'number' && typeof format.height === 'number') {
+      link.size = format.width + 'x' + format.height;
+    }
+    if (typeof format.approxDurationMs === 'string' && format.approxDurationMs) {
+      link.durationMs = format.approxDurationMs;
+    }
+
+    return link;
+  }
+
+  // Returns { links, sources, meta } or null when no YouTube player payload
+  // can be extracted. meta carries counts for detection and diagnostics.
+  function extractYouTube(context) {
+    var playerResponse = parsePlayerResponse(context);
+    if (!playerResponse) {
+      return null;
+    }
+
+    var streamingData = playerResponse.streamingData;
+    if (!streamingData || typeof streamingData !== 'object') {
+      return null;
+    }
+
+    var links = [];
+    var seen = {};
+    var cipheredCount = 0;
+
+    var formats = Array.isArray(streamingData.formats) ? streamingData.formats : [];
+    var adaptive = Array.isArray(streamingData.adaptiveFormats) ? streamingData.adaptiveFormats : [];
+
+    function addFormat(format) {
+      var link = youTubeLinkFromFormat(format);
+      if (link) {
+        if (!seen[link.url]) {
+          seen[link.url] = true;
+          links.push(link);
+        }
+      } else if (format && typeof format === 'object' && !format.url &&
+                 (format.signatureCipher || format.cipher)) {
+        cipheredCount++;
+      }
+    }
+
+    formats.forEach(addFormat);
+    adaptive.forEach(addFormat);
+
+    if (typeof streamingData.hlsManifestUrl === 'string' && streamingData.hlsManifestUrl) {
+      var hls = safeParseUrl(streamingData.hlsManifestUrl);
+      if (hls && shouldIncludeUrl(hls) && !seen[hls.href]) {
+        seen[hls.href] = true;
+        links.push({ server: 'YouTube', type: 'hls', url: hls.href });
+      }
+    }
+
+    if (typeof streamingData.dashManifestUrl === 'string' && streamingData.dashManifestUrl) {
+      var dash = safeParseUrl(streamingData.dashManifestUrl);
+      if (dash && shouldIncludeUrl(dash) && !seen[dash.href]) {
+        seen[dash.href] = true;
+        links.push({ server: 'YouTube', type: 'dash', url: dash.href });
+      }
+    }
+
+    if (links.length === 0) {
+      return null;
+    }
+
+    var usedAttributes = [];
+    if (formats.length > 0) {
+      usedAttributes.push('streamingData.formats');
+    }
+    if (adaptive.length > 0) {
+      usedAttributes.push('streamingData.adaptiveFormats');
+    }
+    if (typeof streamingData.hlsManifestUrl === 'string' && streamingData.hlsManifestUrl) {
+      usedAttributes.push('streamingData.hlsManifestUrl');
+    }
+    if (typeof streamingData.dashManifestUrl === 'string' && streamingData.dashManifestUrl) {
+      usedAttributes.push('streamingData.dashManifestUrl');
+    }
+
+    var videoId = playerResponse.videoDetails && playerResponse.videoDetails.videoId
+      ? playerResponse.videoDetails.videoId
+      : null;
+
+    return {
+      links: links,
+      sources: [{ element: 'ytInitialPlayerResponse', attributes: usedAttributes }],
+      meta: {
+        videoId: videoId,
+        formatCount: formats.length,
+        adaptiveFormatCount: adaptive.length,
+        cipheredCount: cipheredCount
+      }
+    };
+  }
+
+  function extractGeneric(context) {
+    var items = scanMedia(context);
+    var seen = {};
+    var links = [];
+    var sources = [];
+
+    items.forEach(function (item) {
+      var urlObj = safeParseUrl(item.raw, item.base);
+      if (!urlObj || !shouldIncludeUrl(urlObj)) {
+        return;
+      }
+
+      var resolved = urlObj.href;
+      if (seen[resolved]) {
+        return;
+      }
+      seen[resolved] = true;
+
+      var type = classifyUrl(urlObj) || (item.kind === 'video' || item.kind === 'audio' ? item.kind : 'link');
+      var server = urlObj.hostname ? urlObj.hostname.replace(/^www\./, '') : 'direct';
+
+      links.push({
+        server: server,
+        type: type,
+        url: resolved
+      });
+
+      sources.push({
+        element: tagName(item.el),
+        attributes: attributeNames(item.el)
+      });
+    });
+
+    return { links: links, sources: sources };
+  }
+
+  var detect = function (context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return null;
+    }
+
+    // Stub contract takes precedence so test pages behave exactly as before.
+    var markers = doc.querySelectorAll('[data-autoextract]');
+    if (markers.length > 0) {
+      return {
+        supported: true,
+        type: 'stub',
+        markerCount: markers.length
+      };
+    }
+
+    // YouTube site-specific detection.
+    var host = contextHost(context);
+    if (isYouTubeHost(host || '')) {
+      var ytResult = extractYouTube(context);
+      if (ytResult && ytResult.links.length > 0) {
+        return {
+          supported: true,
+          type: 'youtube',
+          videoId: ytResult.meta.videoId,
+          linkCount: ytResult.links.length,
+          cipheredCount: ytResult.meta.cipheredCount
+        };
+      }
+      // No player payload: fall through to the generic scan.
+    }
+
+    var items = scanMedia(context);
+    if (items.length === 0) {
+      return null;
+    }
+
+    var counts = {};
+    items.forEach(function (item) {
+      counts[item.kind] = (counts[item.kind] || 0) + 1;
+    });
+
+    return {
+      supported: true,
+      type: 'generic',
+      counts: counts
+    };
+  };
+
+  var extract = function (context) {
+    if (!context || !context.document) {
+      return { links: [], sources: [] };
+    }
+
+    if (hasMarkers(context)) {
+      return extractStub(context);
+    }
+
+    var host = contextHost(context);
+    if (isYouTubeHost(host || '')) {
+      // On YouTube the player streams via MSE blob: URLs, which are only
+      // valid inside the originating page, so the fallback drops them.
+      var generic = extractGeneric(context);
+      var genericLinks = [];
+      var genericSources = [];
+      generic.links.forEach(function (link, index) {
+        if (link.url.indexOf('blob:') !== 0) {
+          genericLinks.push(link);
+          genericSources.push(generic.sources[index]);
+        }
+      });
+
+      var ytResult = extractYouTube(context);
+      if (ytResult) {
+        var seen = {};
+        ytResult.links.forEach(function (link) {
+          seen[link.url] = true;
+        });
+        var extra = genericLinks.filter(function (link) {
+          return !seen[link.url];
+        });
+        return {
+          links: ytResult.links.concat(extra),
+          sources: ytResult.sources,
+          meta: ytResult.meta
+        };
+      }
+
+      return { links: genericLinks, sources: genericSources };
+    }
+
+    return extractGeneric(context);
   };
 
   // ---------------------------------------------------------------------------
@@ -183,8 +678,8 @@
   // ---------------------------------------------------------------------------
 
   function run() {
-    var detection = detect({ document: document });
-    var results = detection ? extract({ document: document }) : { links: [], sources: [] };
+    var detection = detect({ document: document, location: location });
+    var results = detection ? extract({ document: document, location: location }) : { links: [], sources: [] };
     results.detection = detection;
 
     console.log('AutoExtract userscript: detection =', detection);

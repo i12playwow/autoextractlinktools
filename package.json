@@ -23,7 +23,7 @@
     "dev:desktop": "electron src",
     "build:extension": "node chrome-extension/build/make-shared.js",
     "clean:extension": "node -e \"const fs=require('fs'); try{ fs.rmSync('chrome-extension/shared',{recursive:true}); }catch(e){}\"",
-    "test": "node test-desktop-contract.js"
+    "test": "node test-desktop-contract.js && node test-shared-detect.js && node test-storage.js && node test-desktop-bridge-edge-cases.js && node test-cli-extract.js"
   },
   "keywords": [
     "video",
@@ -36,7 +36,10 @@
   ],
   "dependencies": {
     "commander": "^12.0.0",
-    "electron": "^33.0.0",
+    "electron": "^33.4.11",
     "puppeteer-core": "^25.2.0"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
   }
 }

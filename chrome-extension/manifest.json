@@ -5,6 +5,9 @@
   "description": "Extract video player and download links from supported sites and send to the desktop app",
   "permissions": ["clipboardWrite", "storage", "activeTab"],
   "host_permissions": ["http://localhost:3456/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "AutoExtract Links"

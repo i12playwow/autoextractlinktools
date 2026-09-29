@@ -109,6 +109,21 @@ Current scaffold state:
   raw body, so noisy metadata does not inflate logs.
 - Shutdown is handled once, in the `will-quit` handler. `window-all-closed` is
   kept only as an explicit lifecycle note for non-macOS.
+- The desktop window (`src/renderer/`, loaded via a sandboxed, context-isolated
+  preload) shows a live list of received payloads. Valid payloads are recorded
+  into a bounded backlog (last 200) and broadcast over IPC on the
+  `autoextract:payload` channel; the renderer pulls the backlog on load so
+  history that predates the window is visible, dedupes by `receivedAt`, and can
+  clear the backlog over `autoextract:clearBacklog`.
+- Persistence: the same backlog is mirrored to a JSON file
+  (`<userData>/autoextract-history.json`, override with `AUTOEXTRACT_DATA_DIR`)
+  via `src/storage.js`. Writes are debounced and atomic (tmp file + rename,
+  with a bounded rename retry and copy fallback for Windows file-locking
+  flakes); loads are tolerant (corrupt or wrong-shaped files mean "no
+  history", never a crash). The bridge and window start only after history is
+  loaded, so an early POST cannot be clobbered by the file contents; a final
+  synchronous flush runs in `will-quit`. Clearing the list also clears the
+  file. The bound (200) applies to both memory and disk.
 
 ## Extension scope and storage
 
@@ -119,7 +134,13 @@ Current scaffold state:
 
 ## Out of scope for now
 
-- Site-by-site extraction rule implementation.
+- Site-by-site extraction rules beyond YouTube. The shared module implements a
+  YouTube rule (inline `ytInitialPlayerResponse` parsing, formats,
+  adaptiveFormats, HLS/DASH manifests; ciphered formats are counted but never
+  emitted) plus a generic fallback scan; Bilibili and Vimeo rules are still
+  unimplemented.
+- YouTube signatureCipher deciphering, which would require fetching and
+  evaluating player code that changes across player releases.
 - Any specific download manager integration, including IDM-style behavior, until that is explicitly in scope.
 - End-to-end automation flows beyond what is necessary to demonstrate detection and link forwarding.
 
