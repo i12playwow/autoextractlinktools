@@ -31,6 +31,16 @@
 //     - host gating: player response on a non-YouTube host is ignored
 //     - blob: URLs excluded from the YouTube fallback merge
 //
+//   Bilibili site-specific extraction:
+//     - window.__playinfo__ parsed from inline script text (nested .data)
+//     - DASH video/audio entries emitted with quality/codec/bitrate/size
+//     - dolby/flac premium audio extras included
+//     - legacy durl entries emitted as complete video files
+//     - snake_case field variants handled (base_url)
+//     - malformed playinfo JSON falls back to the generic scan
+//     - host gating: playinfo on a non-Bilibili host is ignored
+//     - blob: URLs excluded from the Bilibili fallback merge
+//
 // Run: node test-shared-detect.js  (also run by npm test)
 //
 
@@ -558,6 +568,180 @@ test('youtube: isYouTubeHost unit checks', () => {
   assert(internal.isYouTubeHost('example.com') === false, 'unrelated host');
   assert(internal.isYouTubeHost('') === false, 'empty host');
   assert(internal.isYouTubeHost(null) === false, 'null host');
+});
+
+// ---------------------------------------------------------------------------
+// Bilibili site-specific extraction tests
+// ---------------------------------------------------------------------------
+
+const BILI_DASH_VIDEO = {
+  id: 80,
+  baseUrl: 'https://upos-sz-mirror08c.bilivideo.com/upgcxcode/idx/video.m4s',
+  mimeType: 'video/mp4; codes="avc1.640028"',
+  codecs: 'avc1.640028',
+  bandwidth: 2500000,
+  width: 1920,
+  height: 1080
+};
+
+const BILI_DASH_AUDIO = {
+  id: 30280,
+  baseUrl: 'https://upos-sz-mirror08c.bilivideo.com/upgcxcode/idx/audio.m4s',
+  mimeType: 'audio/mp4; codes="mp4a.40.2"',
+  codecs: 'mp4a.40.2',
+  bandwidth: 130000
+};
+
+const BILI_DOLBY_AUDIO = {
+  id: 30255,
+  baseUrl: 'https://upos-sz-mirror08c.bilivideo.com/upgcxcode/idx/dolby.m4s',
+  mimeType: 'audio/mp4; codes="ec-3"',
+  codecs: 'ec-3',
+  bandwidth: 320000
+};
+
+const BILI_DURL_URL = 'https://upos-sz-mirror.bilivideo.com/legacy/complete.mp4';
+
+function makePlayinfo(data) {
+  return { code: 0, data: data };
+}
+
+function makeDashData() {
+  return {
+    dash: {
+      video: [BILI_DASH_VIDEO],
+      audio: [BILI_DASH_AUDIO],
+      dolby: { audio: [BILI_DOLBY_AUDIO] }
+    }
+  };
+}
+
+function makeBilibiliDoc(playinfo, extraElements) {
+  const doc = new DocumentShim('https://www.bilibili.com/video/BV1xx411c7mD');
+  const script = makeElement('script', []);
+  script.textContent = 'window.__playinfo__=' + JSON.stringify(playinfo) + ';';
+  doc.register(script);
+  (extraElements || []).forEach((el) => doc.register(el));
+  return doc;
+}
+
+test('bilibili: full playinfo yields DASH video/audio/dolby links with metadata', () => {
+  const doc = makeBilibiliDoc(makePlayinfo(makeDashData()));
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+
+  const detection = AE.detect(context);
+  assert(detection && detection.type === 'bilibili', 'detect should report bilibili, got ' + JSON.stringify(detection));
+  assert(detection.linkCount === 3, 'expected 3 links in detection, got ' + detection.linkCount);
+  assert(detection.dashVideoCount === 1 && detection.dashAudioCount === 1, 'dash counts carried');
+
+  const results = AE.extract(context);
+  assert(results.links.length === 3, 'expected 3 links, got ' + results.links.length);
+  assert(results.sources.length === 1 && results.sources[0].element === 'window.__playinfo__', 'source element recorded');
+  assert(results.sources[0].attributes.indexOf('data.dash.video') !== -1, 'dash video attribute recorded');
+  assert(results.sources[0].attributes.indexOf('data.dash.audio') !== -1, 'dash audio attribute recorded');
+
+  const video = results.links.find((l) => l.url === BILI_DASH_VIDEO.baseUrl);
+  assert(video && video.server === 'Bilibili' && video.type === 'video', 'dash video emitted');
+  assert(video.quality === '1080p' && video.qualityId === '80', 'quality label from id');
+  assert(video.container === 'mp4' && video.size === '1920x1080', 'container from MIME subtype, size carried');
+  assert(video.codecs === 'avc1.640028' && video.bitrate === 2500000, 'codecs and bitrate carried');
+
+  const audio = results.links.find((l) => l.url === BILI_DASH_AUDIO.baseUrl);
+  assert(audio && audio.type === 'audio' && audio.bitrate === 130000, 'dash audio emitted');
+  assert(audio.quality === undefined && audio.container === 'mp4', 'audio has no quality label but has container');
+
+  const dolby = results.links.find((l) => l.url === BILI_DOLBY_AUDIO.baseUrl);
+  assert(dolby && dolby.type === 'audio' && dolby.codecs === 'ec-3', 'dolby extra emitted as audio');
+
+  assert(results.meta.dashVideoCount === 1 && results.meta.dashAudioCount === 1 && results.meta.durlCount === 0, 'meta counts');
+});
+
+test('bilibili: legacy durl entries emitted as complete video files', () => {
+  const data = {
+    durl: [{ url: BILI_DURL_URL, size: 12345678, length: 212000 }]
+  };
+  const doc = makeBilibiliDoc(makePlayinfo(data));
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+
+  const detection = AE.detect(context);
+  assert(detection && detection.type === 'bilibili' && detection.durlCount === 1, 'durl detection, got ' + JSON.stringify(detection));
+
+  const results = AE.extract(context);
+  assert(results.links.length === 1, 'one durl link');
+  const link = results.links[0];
+  assert(link.url === BILI_DURL_URL, 'durl url should be ' + BILI_DURL_URL + ', got ' + link.url);
+  assert(link.type === 'video' && link.server === 'Bilibili', 'durl classified as video');
+  assert(link.bytes === 12345678 && link.durationMs === '212000', 'durl size/duration carried');
+  assert(results.sources[0].attributes.indexOf('data.durl') !== -1, 'durl attribute recorded');
+});
+
+test('bilibili: snake_case field variants handled', () => {
+  const entry = {
+    id: 64,
+    base_url: 'https://upos.bilivideo.com/snake/video.m4s',
+    mimeType: 'video/mp4; codes="avc1.64001f"',
+    codecs: 'avc1.64001f'
+  };
+  const doc = makeBilibiliDoc(makePlayinfo({ dash: { video: [entry], audio: [] } }));
+  const AE = loadAutoExtract(doc);
+  const results = AE.extract(makeContext(doc));
+  assert(results.links.length === 1 && results.links[0].url === entry.base_url, 'base_url honored, got ' + JSON.stringify(results.links));
+  assert(results.links[0].quality === '720p', 'snake_case entry still gets quality label');
+});
+
+test('bilibili: malformed playinfo JSON falls back to the generic scan', () => {
+  const doc = new DocumentShim('https://www.bilibili.com/video/BV1test');
+  const brokenScript = makeElement('script', []);
+  brokenScript.textContent = 'window.__playinfo__={"data":{"dash": truncated';
+  const video = makeElement('video', ['src=https://cdn.example.com/bili-clip.mp4']);
+  doc.register(brokenScript);
+  doc.register(video);
+
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+  const detection = AE.detect(context);
+  assert(detection && detection.type === 'generic', 'should fall back to generic, got ' + JSON.stringify(detection));
+  const results = AE.extract(context);
+  assert(results.links.length === 1 && results.links[0].url === 'https://cdn.example.com/bili-clip.mp4', 'generic link used as fallback');
+});
+
+test('bilibili: host gating ignores playinfo on other sites', () => {
+  const doc = new DocumentShim('https://not-bilibili.example.com/video');
+  const script = makeElement('script', []);
+  script.textContent = 'window.__playinfo__=' + JSON.stringify(makePlayinfo(makeDashData())) + ';';
+  doc.register(script);
+
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+  const detection = AE.detect(context);
+  assert(detection === null, 'non-Bilibili host must not trigger bilibili detection, got ' + JSON.stringify(detection));
+  assert(AE.extract(context).links.length === 0, 'no links from foreign host playinfo');
+});
+
+test('bilibili: blob URLs excluded from fallback merge, links deduped', () => {
+  const blobVideo = makeElement('video', ['src=blob:https://www.bilibili.com/aaaa-bbbb']);
+  const doc = makeBilibiliDoc(makePlayinfo(makeDashData()), [blobVideo]);
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+
+  const results = AE.extract(context);
+  assert(results.links.every((l) => l.url.indexOf('blob:') !== 0), 'blob URLs must be excluded on Bilibili');
+  const urls = results.links.map((l) => l.url);
+  assert(new Set(urls).size === urls.length, 'no duplicate urls in merged results');
+  assert(results.links.length === 3, 'expected exactly the 3 bilibili links, got ' + results.links.length);
+});
+
+test('bilibili: isBilibiliHost unit checks', () => {
+  const internal = loadAutoExtract(new DocumentShim('http://localhost:9999/x'))._internal;
+  assert(internal.isBilibiliHost('www.bilibili.com') === true, 'www subdomain');
+  assert(internal.isBilibiliHost('bilibili.com') === true, 'apex');
+  assert(internal.isBilibiliHost('m.bilibili.com') === true, 'mobile subdomain');
+  assert(internal.isBilibiliHost('bilibili.com.evil.com') === false, 'suffix lookalike rejected');
+  assert(internal.isBilibiliHost('notbilibili.com') === false, 'prefix lookalike rejected');
+  assert(internal.isBilibiliHost('') === false, 'empty host');
+  assert(internal.isBilibiliHost(null) === false, 'null host');
 });
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AutoExtract Link Tools
 // @namespace    https://github.com/autoextractlinktools
-// @version      1.1.0
+// @version      1.2.0
 // @description  Detect video players and media links on the page, extract links,
 //               and forward them to the local desktop app at http://localhost:3456/
 // @match        https://www.youtube.com/*
@@ -36,11 +36,15 @@
 //       2. YouTube: parses the inline ytInitialPlayerResponse script for
 //          streamingData formats and HLS/DASH manifests. signatureCipher-
 //          gated formats are counted but never emitted (no deciphering).
-//       3. Generic media scan: <video>/<audio> elements and their <source>
+//       3. Bilibili: parses the inline window.__playinfo__ script for DASH
+//          video/audio entries (plus dolby/flac extras) and legacy durl
+//          files, with quality labels, codecs, and bitrates.
+//       4. Generic media scan: <video>/<audio> elements and their <source>
 //          children, standalone <source> elements, and anchors whose href
 //          points at a known media file extension. blob:/http(s) URLs are
-//          included; data: URLs are skipped. On YouTube, blob: URLs are
-//          excluded because MSE blob URLs are unusable outside the page.
+//          included; data: URLs are skipped. On YouTube and Bilibili, blob:
+//          URLs are excluded because MSE blob URLs are unusable outside the
+//          page.
 //   - Shows a small in-page status indicator so behavior is observable without
 //     devtools.
 //   - Forwards results to the desktop app over localhost if it is reachable.
@@ -471,6 +475,230 @@
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Bilibili site-specific extraction (inlined from shared/index.js).
+  // ---------------------------------------------------------------------------
+
+  var BILIBILI_HOST_PATTERN = /(^|\.)bilibili\.com$/i;
+
+  function isBilibiliHost(hostname) {
+    return typeof hostname === 'string' && BILIBILI_HOST_PATTERN.test(hostname);
+  }
+
+  // Returns the first non-empty string property among `keys`.
+  function pickString(obj, keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var value = obj ? obj[keys[i]] : undefined;
+      if (typeof value === 'string' && value.length > 0) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  function parseBilibiliPlayinfo(context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return null;
+    }
+    var scripts = queryAll(doc, 'script');
+    for (var i = 0; i < scripts.length; i++) {
+      var el = scripts[i];
+      var text = el && typeof el.textContent === 'string' ? el.textContent : '';
+      if (text.indexOf('__playinfo__') === -1) {
+        continue;
+      }
+      var json = extractJsonAssignment(text, '__playinfo__');
+      if (!json) {
+        continue;
+      }
+      try {
+        var parsed = JSON.parse(json);
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      } catch (error) {
+        // Malformed or truncated assignment: try the next script.
+      }
+    }
+    return null;
+  }
+
+  // DASH quality ids to human labels (the 2025 list; unknown ids fall back to
+  // the raw id in qualityId).
+  var BILIBILI_QUALITY_LABELS = {
+    6: '240p', 16: '360p', 32: '480p', 64: '720p', 74: '720p60',
+    80: '1080p', 112: '1080p+', 116: '1080p60', 120: '4K',
+    125: 'HDR', 126: 'Dolby', 127: '8K'
+  };
+
+  // Converts one DASH entry (video or audio) into a link, or null when the
+  // entry has no usable URL.
+  function bilibiliLinkFromDash(dash, kind) {
+    if (!dash || typeof dash !== 'object') {
+      return null;
+    }
+    // Field naming varies across playinfo builds (camelCase and snake_case).
+    var raw = pickString(dash, ['baseUrl', 'base_url', 'baseURL']);
+    if (!raw) {
+      return null;
+    }
+    var parsed = safeParseUrl(raw);
+    if (!parsed || !shouldIncludeUrl(parsed)) {
+      return null;
+    }
+
+    var link = {
+      server: 'Bilibili',
+      type: kind,
+      url: parsed.href
+    };
+
+    if (dash.id !== undefined && dash.id !== null) {
+      link.qualityId = String(dash.id);
+      var label = BILIBILI_QUALITY_LABELS[dash.id];
+      if (label) {
+        link.quality = label;
+      }
+    }
+    if (typeof dash.codecs === 'string' && dash.codecs) {
+      link.codecs = dash.codecs;
+    }
+    if (typeof dash.bandwidth === 'number' && dash.bandwidth > 0) {
+      link.bitrate = dash.bandwidth;
+    }
+    if (kind === 'video' && typeof dash.width === 'number' && typeof dash.height === 'number') {
+      link.size = dash.width + 'x' + dash.height;
+    }
+    var container = null;
+    var containerMatch = typeof dash.mimeType === 'string'
+      ? dash.mimeType.match(/container="?(\w+)"?/)
+      : null;
+    if (containerMatch) {
+      container = containerMatch[1];
+    } else {
+      // Bilibili mimeType is like 'video/mp4; codes="avc1.640028"' with no
+      // container attribute; derive the container from the MIME subtype.
+      var mime = mimeContainer(dash.mimeType);
+      if (mime && (mime.kind === 'video' || mime.kind === 'audio')) {
+        container = mime.container;
+      }
+    }
+    if (container) {
+      link.container = container;
+    }
+
+    return link;
+  }
+
+  // Converts a legacy durl entry (complete muxed file) into a link.
+  function bilibiliLinkFromDurl(durl) {
+    if (!durl || typeof durl !== 'object') {
+      return null;
+    }
+    var raw = pickString(durl, ['url']);
+    if (!raw) {
+      return null;
+    }
+    var parsed = safeParseUrl(raw);
+    if (!parsed || !shouldIncludeUrl(parsed)) {
+      return null;
+    }
+
+    var link = {
+      server: 'Bilibili',
+      type: 'video',
+      url: parsed.href
+    };
+
+    if (typeof durl.size === 'number' && durl.size > 0) {
+      link.bytes = durl.size;
+    }
+    if (typeof durl.length === 'number' && durl.length > 0) {
+      link.durationMs = String(durl.length);
+    }
+
+    return link;
+  }
+
+  // Returns { links, sources, meta } or null when no playinfo payload can be
+  // extracted. meta carries counts for detection and diagnostics.
+  function extractBilibili(context) {
+    var playinfo = parseBilibiliPlayinfo(context);
+    if (!playinfo || !playinfo.data || typeof playinfo.data !== 'object') {
+      return null;
+    }
+    var data = playinfo.data;
+
+    var links = [];
+    var seen = {};
+
+    function addLink(link) {
+      if (link && !seen[link.url]) {
+        seen[link.url] = true;
+        links.push(link);
+      }
+    }
+
+    var dash = data.dash && typeof data.dash === 'object' ? data.dash : null;
+    if (dash) {
+      var videos = Array.isArray(dash.video) ? dash.video : [];
+      videos.forEach(function (entry) {
+        addLink(bilibiliLinkFromDash(entry, 'video'));
+      });
+
+      var audios = Array.isArray(dash.audio) ? dash.audio : [];
+      audios.forEach(function (entry) {
+        addLink(bilibiliLinkFromDash(entry, 'audio'));
+      });
+
+      // Premium audio extras, present only on some pages; kept so the audio
+      // list is complete when they are available.
+      if (dash.dolby && Array.isArray(dash.dolby.audio)) {
+        dash.dolby.audio.forEach(function (entry) {
+          addLink(bilibiliLinkFromDash(entry, 'audio'));
+        });
+      }
+      if (dash.flac && dash.flac.audio) {
+        addLink(bilibiliLinkFromDash(dash.flac.audio, 'audio'));
+      }
+    }
+
+    // Legacy single-file streams (older videos / fallback): each durl entry
+    // is a complete muxed file.
+    var durl = Array.isArray(data.durl) ? data.durl : [];
+    durl.forEach(function (entry) {
+      addLink(bilibiliLinkFromDurl(entry));
+    });
+
+    if (links.length === 0) {
+      return null;
+    }
+
+    var usedAttributes = [];
+    if (dash) {
+      if (Array.isArray(dash.video) && dash.video.length > 0) {
+        usedAttributes.push('data.dash.video');
+      }
+      if (Array.isArray(dash.audio) && dash.audio.length > 0) {
+        usedAttributes.push('data.dash.audio');
+      }
+    }
+    if (durl.length > 0) {
+      usedAttributes.push('data.durl');
+    }
+
+    return {
+      links: links,
+      sources: [{ element: 'window.__playinfo__', attributes: usedAttributes }],
+      meta: {
+        dashVideoCount: dash && Array.isArray(dash.video) ? dash.video.length : 0,
+        dashAudioCount: dash && Array.isArray(dash.audio) ? dash.audio.length : 0,
+        durlCount: durl.length
+      }
+    };
+  }
+
   function extractGeneric(context) {
     var items = scanMedia(context);
     var seen = {};
@@ -539,6 +767,22 @@
       // No player payload: fall through to the generic scan.
     }
 
+    // Bilibili site-specific detection.
+    if (isBilibiliHost(host || '')) {
+      var biliResult = extractBilibili(context);
+      if (biliResult && biliResult.links.length > 0) {
+        return {
+          supported: true,
+          type: 'bilibili',
+          linkCount: biliResult.links.length,
+          dashVideoCount: biliResult.meta.dashVideoCount,
+          dashAudioCount: biliResult.meta.dashAudioCount,
+          durlCount: biliResult.meta.durlCount
+        };
+      }
+      // No playinfo payload: fall through to the generic scan.
+    }
+
     var items = scanMedia(context);
     if (items.length === 0) {
       return null;
@@ -556,6 +800,41 @@
     };
   };
 
+  // Merges a site-specific result with the generic scan on the same page:
+  // site links first, then generic-only links (dedup by resolved URL).
+  // dropBlob excludes blob: URLs from the generic fallback: YouTube and
+  // Bilibili players stream via MSE, and blob URLs only work inside the
+  // originating page.
+  function mergeSiteAndGeneric(context, siteResult, dropBlob) {
+    var generic = extractGeneric(context);
+    var genericLinks = [];
+    var genericSources = [];
+    generic.links.forEach(function (link, index) {
+      if (!dropBlob || link.url.indexOf('blob:') !== 0) {
+        genericLinks.push(link);
+        genericSources.push(generic.sources[index]);
+      }
+    });
+
+    if (!siteResult) {
+      return { links: genericLinks, sources: genericSources };
+    }
+
+    var seen = {};
+    siteResult.links.forEach(function (link) {
+      seen[link.url] = true;
+    });
+    var extra = genericLinks.filter(function (link) {
+      return !seen[link.url];
+    });
+
+    return {
+      links: siteResult.links.concat(extra),
+      sources: siteResult.sources,
+      meta: siteResult.meta
+    };
+  }
+
   var extract = function (context) {
     if (!context || !context.document) {
       return { links: [], sources: [] };
@@ -569,33 +848,12 @@
     if (isYouTubeHost(host || '')) {
       // On YouTube the player streams via MSE blob: URLs, which are only
       // valid inside the originating page, so the fallback drops them.
-      var generic = extractGeneric(context);
-      var genericLinks = [];
-      var genericSources = [];
-      generic.links.forEach(function (link, index) {
-        if (link.url.indexOf('blob:') !== 0) {
-          genericLinks.push(link);
-          genericSources.push(generic.sources[index]);
-        }
-      });
+      return mergeSiteAndGeneric(context, extractYouTube(context), true);
+    }
 
-      var ytResult = extractYouTube(context);
-      if (ytResult) {
-        var seen = {};
-        ytResult.links.forEach(function (link) {
-          seen[link.url] = true;
-        });
-        var extra = genericLinks.filter(function (link) {
-          return !seen[link.url];
-        });
-        return {
-          links: ytResult.links.concat(extra),
-          sources: ytResult.sources,
-          meta: ytResult.meta
-        };
-      }
-
-      return { links: genericLinks, sources: genericSources };
+    if (isBilibiliHost(host || '')) {
+      // Same MSE situation as YouTube: drop blob: URLs from the fallback.
+      return mergeSiteAndGeneric(context, extractBilibili(context), true);
     }
 
     return extractGeneric(context);
