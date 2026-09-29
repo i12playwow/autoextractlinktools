@@ -23,6 +23,8 @@ npm install          # install dependencies (Electron included)
 npm run desktop      # start the desktop app and its bridge
 npm test             # contract + detection/YouTube + bridge edge-case suites
 node run-desktop-bridge.js   # end-to-end smoke test of the real Electron bridge
+node test-extension-e2e.js   # extension E2E: loads the packed extension in a
+                             # headless browser and asserts bridge delivery
 ```
 
 Extension copies: `npm run build:extension` refreshes `chrome-extension/shared/`;
@@ -55,8 +57,11 @@ See `ARCHITECTURE.md` for the bridge contract and design decisions.
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`) runs `npm test` plus the desktop
-smoke test on every push and pull request, on both Ubuntu (under `xvfb-run`,
-since Electron needs a display) and Windows. The Electron binary is cached;
-if its download fails, the layers that spawn the real app skip gracefully
-instead of failing the run.
+GitHub Actions (`.github/workflows/ci.yml`) runs `npm test`, the desktop
+smoke test, and the extension E2E on every push and pull request, on both
+Ubuntu (under `xvfb-run`, since Electron and the headless extension browser
+need a display) and Windows. The Electron binary is cached; if its download
+fails, the layers that spawn the real app skip gracefully instead of failing
+the run. The extension E2E rebuilds `chrome-extension-packed/` itself and
+tries every installed Chromium-family browser, because recent branded Chrome
+builds restrict `--load-extension` (Edge and Chromium still work).
