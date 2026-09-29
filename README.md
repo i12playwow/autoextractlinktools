@@ -1,5 +1,7 @@
 # autoextractlinktools
 
+[![CI](https://github.com/i12playwow/autoextractlinktools/actions/workflows/ci.yml/badge.svg)](https://github.com/i12playwow/autoextractlinktools/actions/workflows/ci.yml)
+
 Extract video links from multi-tab video player interfaces via headless browser automation.
 
 An Electron desktop app with a Chrome extension bridge, plus an optional userscript path, for extracting video player links and forwarding them to the local desktop app.
@@ -57,11 +59,15 @@ See `ARCHITECTURE.md` for the bridge contract and design decisions.
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`) runs `npm test`, the desktop
-smoke test, and the extension E2E on every push and pull request, on both
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
+all suites — contract, detection, storage, bridge edge cases, CLI, the desktop
+smoke test, and the extension E2E — on every push and pull request, on both
 Ubuntu (under `xvfb-run`, since Electron and the headless extension browser
-need a display) and Windows. The Electron binary is cached; if its download
-fails, the layers that spawn the real app skip gracefully instead of failing
-the run. The extension E2E rebuilds `chrome-extension-packed/` itself and
-tries every installed Chromium-family browser, because recent branded Chrome
-builds restrict `--load-extension` (Edge and Chromium still work).
+need a display) and Windows, and writes a per-suite results table to the
+run's summary. The Electron binary is cached; if its download fails, the
+layers that spawn the real app skip gracefully instead of failing the run.
+The extension E2E rebuilds `chrome-extension-packed/` itself and tries every
+installed Chromium-family browser, because recent branded Chrome builds
+restrict `--load-extension` (Edge and Chromium still work). Locally,
+`node scripts/ci-test-summary.js` runs the same everything and prints the
+same table without needing CI.

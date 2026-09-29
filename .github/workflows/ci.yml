@@ -45,33 +45,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests (Linux, under xvfb)
+      # One step runs every suite (contract, detection, storage, bridge edge
+      # cases, CLI, desktop smoke, extension E2E), streams each suite's live
+      # output into the job log, and appends a per-suite results table to the
+      # run's step summary. Both browser-dependent E2Es run under xvfb on
+      # Linux; their harnesses skip gracefully when no suitable browser
+      # exists (e.g. a failed Electron download) instead of failing.
+      - name: Run all suites and write per-suite summary (Linux, under xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run -a npm test
+        run: xvfb-run -a node scripts/ci-test-summary.js
 
-      - name: Run tests (Windows)
+      - name: Run all suites and write per-suite summary (Windows)
         if: runner.os == 'Windows'
-        run: npm test
-
-      - name: Desktop smoke test (Linux, under xvfb)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a node run-desktop-bridge.js
-
-      - name: Desktop smoke test (Windows)
-        if: runner.os == 'Windows'
-        run: node run-desktop-bridge.js
-
-      # Loads the packed extension (chrome-extension-packed/, rebuilt by the
-      # test itself) into a headless Chromium-family browser, opens the stub
-      # test page on localhost, and asserts the content script -> background
-      # worker -> bridge (localhost:3456) delivery end to end. Branded Chrome
-      # builds restrict --load-extension, so the harness tries Chromium,
-      # Chrome, and Edge and fails only if none delivers. Skips when no
-      # Chromium-family browser is installed.
-      - name: Extension E2E (headless browser, Linux under xvfb)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a node test-extension-e2e.js
-
-      - name: Extension E2E (headless browser, Windows)
-        if: runner.os == 'Windows'
-        run: node test-extension-e2e.js
+        run: node scripts/ci-test-summary.js

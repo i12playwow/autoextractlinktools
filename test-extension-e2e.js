@@ -183,9 +183,13 @@ function wait(ms) {
 
 // Launches one candidate with the extension loaded and the test page open.
 // Resolves { ok, diagnostics } — ok means the extension pipeline delivered a
-// payload to the stub bridge before the deadline.
-function tryBrowser(executablePath, received, profileDir) {
+// payload to the stub bridge before the deadline. A fresh profile directory
+// is used per attempt: reusing a profile across attempts (or across the CLI
+// suite's browser runs on the same machine) can leave extension state that
+// blocks a clean --load-extension.
+function tryBrowser(executablePath, received) {
   return new Promise((resolve) => {
+    const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autoextract-ext-e2e-profile-'));
     const args = [
       '--headless=new',
       '--disable-gpu',
@@ -202,11 +206,15 @@ function tryBrowser(executablePath, received, profileDir) {
     const chrome = spawn(executablePath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderrTail = '';
 
-    const timer = setTimeout(() => finish(false, 'deadline (25s) reached without a bridge delivery'), 25000);
+    const timer = setTimeout(() => finish(false, 'deadline (40s) reached without a bridge delivery'), 40000);
 
     function finish(ok, note) {
       clearTimeout(timer);
       try { chrome.kill('SIGKILL'); } catch (error) { /* already gone */ }
+      // Best-effort profile cleanup; browser teardown may lag the kill.
+      setTimeout(() => {
+        try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+      }, 500);
       resolve({ ok, note, diagnostics: stderrTail.slice(-4000) });
     }
 
@@ -261,7 +269,6 @@ async function run() {
 
   let bridge;
   let page;
-  let profileDir;
   try {
     try {
       buildPackedExtension();
@@ -273,14 +280,13 @@ async function run() {
 
     bridge = await startStubBridge(BRIDGE_PORT);
     page = await startPageServer(PAGE_PORT);
-    profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autoextract-ext-e2e-'));
 
     let succeeded = null;
     const attempted = [];
     for (const candidate of candidates) {
       attempted.push(path.basename(path.dirname(path.dirname(candidate))));
       console.log('  ... trying browser: ' + candidate);
-      const outcome = await tryBrowser(candidate, bridge.received, profileDir);
+      const outcome = await tryBrowser(candidate, bridge.received);
       if (outcome.ok) {
         succeeded = { candidate, outcome };
         break;
@@ -291,7 +297,7 @@ async function run() {
     if (!succeeded) {
       fail('extension pipeline delivers to bridge', new Error(
         'no candidate browser loaded the extension successfully (tried: ' + attempted.join(', ') + '). ' +
-        'Note: recent branded Chrome builds restrict --load-extension; install Chromium for this test.'
+        'Note: recent branded Chrome builds restrict --load-extension; Edge or Chromium are known to work.'
       ));
       return;
     }
@@ -316,9 +322,6 @@ async function run() {
   } finally {
     if (bridge) { await stopServer(bridge.server); }
     if (page) { await stopServer(page.server); }
-    if (profileDir) {
-      try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch (error) { /* best effort */ }
-    }
   }
 }
 
