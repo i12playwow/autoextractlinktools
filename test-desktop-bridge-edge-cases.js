@@ -22,7 +22,8 @@
 //      127.0.0.1:3461 (same pattern as run-desktop-bridge.js) and repeats a
 //      representative subset of behaviors against the real process, including
 //      empty-body rejection. Skipped gracefully (not a failure) when the
-//      electron package is not installed/runnable.
+//      electron package is not installed/runnable — e.g. when the binary
+//      download was skipped or failed, such as in minimal CI environments.
 //
 // Ports used: 3460-3462 (3462 for the isolated shutdown test). The other
 // local harnesses use 3456-3459 and 3463, so there is no collision.
@@ -33,6 +34,7 @@
 'use strict';
 
 const http = require('http');
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -324,12 +326,17 @@ const ELECTRON_CLI = path.join(APP_ROOT, 'node_modules', 'electron', 'cli.js');
 
 function electronAvailable() {
   try {
-    // eslint-disable-next-line global-require
     require('electron/package.json');
-    return true;
   } catch (error) {
     return false;
   }
+  // The npm package can be present while its postinstall (binary download)
+  // failed or was skipped; spawning would then fail confusingly. Only claim
+  // availability when the dist binary actually exists.
+  const distBinary = process.platform === 'win32'
+    ? path.join(APP_ROOT, 'node_modules', 'electron', 'dist', 'electron.exe')
+    : path.join(APP_ROOT, 'node_modules', 'electron', 'dist', 'electron');
+  return fs.existsSync(distBinary);
 }
 
 function startElectron() {

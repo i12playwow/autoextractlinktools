@@ -52,3 +52,11 @@ Exit codes: `0` links found (batch: all URLs ok), `3` none found (unless
 failed URL).
 
 See `ARCHITECTURE.md` for the bridge contract and design decisions.
+
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `npm test` plus the desktop
+smoke test on every push and pull request, on both Ubuntu (under `xvfb-run`,
+since Electron needs a display) and Windows. The Electron binary is cached;
+if its download fails, the layers that spawn the real app skip gracefully
+instead of failing the run.
