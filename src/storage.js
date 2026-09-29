@@ -2,36 +2,137 @@
 //
 // JSON file persistence for the desktop bridge's received-payload history.
 //
-// Storage shape:
+// On-disk shapes:
+//
+//   v2 (encrypted, current):
+//   {
+//     "version": 2,
+//     "savedAt": "<ISO timestamp>",
+//     "encryption": "aes-256-gcm",
+//     "nonce": "<hex, 96-bit random per flush>",
+//     "ciphertext": "<base64: encrypted JSON { savedAt, payloads }>"
+//   }
+//
+//   v1 (legacy plaintext, read-only):
 //   {
 //     "version": 1,
-//     "savedAt": "<ISO timestamp of last flush>",
+//     "savedAt": "...",
 //     "payloads": [ { receivedAt, links, detected, sources, pageUrl, pageTitle }, ... ]
 //   }
 //
-// Design notes:
-//   - Atomic writes: the JSON is written to <file>.tmp and renamed over the
-//     target, so a crash mid-write cannot corrupt the previous history. On
-//     Windows, fs.renameSync replaces an existing destination file.
-//   - Debounced flush: appendPayload() marks the store dirty and schedules a
-//     single flush after FLUSH_DEBOUNCE_MS; rapid bursts coalesce into one
-//     write instead of one write per payload.
-//   - Tolerant load: anything unusable (missing file, invalid JSON, wrong
-//     shape, payloads not an array) is treated as "no history" and a fresh
-//     file is created on the next flush. The store never throws because of a
-//     corrupted file.
-//   - Injectable path: storagePath is a constructor option (tests use a temp
-//     directory; the app uses the Electron userData directory).
+// Encryption:
+//   - A crypto adapter must provide encrypt(plaintextString) -> { data, nonce }
+//     and decrypt({ data, nonce }) -> plaintextString, throwing on tamper.
+//   - The app wires Electron's safeStorage adapter (OS keystore: DPAPI /
+//     Keychain / libsecret; see src/main.js). When no OS keystore is
+//     available, useKeyfileAdapter() provides a fallback: a random 32-byte
+//     key stored in <file>.key with 0600 permissions (best-effort on
+//     Windows, where POSIX modes are advisory).
+//   - Legacy v1 plaintext files load normally and are re-written encrypted on
+//     the next flush: the upgrade is transparent, nothing is lost.
+//   - Every flush generates a fresh 96-bit nonce; the nonce is stored beside
+//     the ciphertext. With safeStorage the key is OS-managed; with the keyfile
+//     adapter the key lives in a separate 0600 file, never in the history.
+//   - Tamper detection: AES-GCM auth tags fail the decrypt with a thrown
+//     error, which load() treats as "no history" (same policy as corruption).
 //
-// Plain Node safety: no Electron imports; safe to require anywhere.
+// Unchanged invariants:
+//   - Atomic writes (tmp + rename, with retry/copy fallback on Windows), so a
+//     crash mid-write cannot corrupt the previous history.
+//   - Debounced flush: bursts coalesce into one write.
+//   - Tolerant load: anything unusable means "no history"; the store never
+//     throws because of a bad file.
+//   - Injectable file path and injectable crypto adapter (tests).
+//
+// Plain Node safety: no Electron imports; the built-in adapter uses only
+// node:crypto. Safe to require anywhere.
 
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const DEFAULT_MAX_PAYLOADS = 200;
 const FLUSH_DEBOUNCE_MS = 500;
+const KEYFILE_MODE = 0o600;
+
+// ---------------------------------------------------------------------------
+// Built-in adapter: AES-256-GCM with a key stored in a 0600 sidecar keyfile
+// ---------------------------------------------------------------------------
+
+// Creates (or reuses) the keyfile adapter for a given history file. The key
+// file lives next to the history file: <historyPath>.key. Injectable for
+// tests via options.keyFilePath / options.fs.
+function useKeyfileAdapter(options) {
+  options = options || {};
+  var fsApi = options.fs || fs;
+
+  var keyPath = options.keyFilePath || (options.filePath + '.key');
+  var key = null;
+
+  function loadOrCreateKey() {
+    if (key) {
+      return key;
+    }
+    try {
+      var existing = fsApi.readFileSync(keyPath);
+      if (existing && existing.length === 32) {
+        key = existing;
+        return key;
+      }
+    } catch (error) {
+      // Fall through to creation.
+    }
+
+    key = crypto.randomBytes(32);
+    try {
+      fsApi.writeFileSync(keyPath, key, { mode: KEYFILE_MODE });
+      try {
+        fsApi.chmodSync(keyPath, KEYFILE_MODE);
+      } catch (chmodError) {
+        // Best effort: Windows ignores POSIX modes; rely on the profile dir's
+        // own ACLs.
+      }
+    } catch (writeError) {
+      key = null;
+      throw writeError;
+    }
+    return key;
+  }
+
+  function encrypt(plaintext) {
+    var keyBytes = loadOrCreateKey();
+    var nonce = crypto.randomBytes(12);
+    var cipher = crypto.createCipheriv('aes-256-gcm', keyBytes, nonce);
+    var ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+    var tag = cipher.getAuthTag();
+    // data layout: tag (16) || ciphertext
+    return {
+      data: Buffer.concat([tag, ciphertext]).toString('base64'),
+      nonce: nonce.toString('hex')
+    };
+  }
+
+  function decrypt(envelope) {
+    var keyBytes = loadOrCreateKey();
+    var packed = Buffer.from(envelope.data, 'base64');
+    if (packed.length < 16) {
+      throw new Error('ciphertext too short');
+    }
+    var tag = packed.subarray(0, 16);
+    var ciphertext = packed.subarray(16);
+    var decipher = crypto.createDecipheriv('aes-256-gcm', keyBytes, Buffer.from(envelope.nonce, 'hex'));
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  }
+
+  return { encrypt: encrypt, decrypt: decrypt, keyPath: keyPath };
+}
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
 
 function PayloadStore(options) {
   options = options || {};
@@ -48,6 +149,10 @@ function PayloadStore(options) {
     ? options.flushDebounceMs
     : FLUSH_DEBOUNCE_MS;
 
+  // Crypto adapter: required for v2 writes. When omitted, the keyfile
+  // adapter is used so the store is secure-by-default under plain Node too.
+  this.cryptoAdapter = options.cryptoAdapter || useKeyfileAdapter({ filePath: this.filePath });
+
   this.payloads = [];
   this.dirty = false;
   this.flushTimer = null;
@@ -59,7 +164,8 @@ function PayloadStore(options) {
 }
 
 // Loads history from disk. Resolves to an array of payloads (possibly empty)
-// and never rejects: an unreadable or corrupt file means "no history".
+// and never rejects: an unreadable, corrupt, or undecryptable file means "no
+// history". Legacy v1 plaintext files load and upgrade on next flush.
 PayloadStore.prototype.load = function () {
   var self = this;
   return new Promise(function (resolve) {
@@ -78,16 +184,53 @@ PayloadStore.prototype.load = function () {
         parsed = null;
       }
 
+      if (parsed && typeof parsed === 'object' && parsed.version === 2 &&
+          typeof parsed.ciphertext === 'string' && typeof parsed.nonce === 'string') {
+        // v2: decrypt, then validate the inner document.
+        var plaintext = null;
+        try {
+          plaintext = self.cryptoAdapter.decrypt({ data: parsed.ciphertext, nonce: parsed.nonce });
+        } catch (decryptError) {
+          // Wrong key or tampered file: same policy as corruption.
+          self.payloads = [];
+          resolve(self.payloads);
+          return;
+        }
+
+        var inner = null;
+        try {
+          inner = JSON.parse(plaintext);
+        } catch (innerError) {
+          inner = null;
+        }
+
+        if (inner && typeof inner === 'object' && Array.isArray(inner.payloads)) {
+          self.payloads = inner.payloads.filter(function (p) {
+            return p && typeof p === 'object';
+          });
+        } else {
+          self.payloads = [];
+        }
+        resolve(self.payloads);
+        return;
+      }
+
       if (parsed && typeof parsed === 'object' &&
           parsed.version === 1 &&
           Array.isArray(parsed.payloads)) {
+        // Legacy plaintext: keep the payloads; the next flush upgrades the
+        // file to v2. Mark dirty so the upgrade actually happens even if the
+        // history never changes afterwards.
         self.payloads = parsed.payloads.filter(function (p) {
           return p && typeof p === 'object';
         });
-      } else {
-        self.payloads = [];
+        self.dirty = true;
+        self.scheduleFlush();
+        resolve(self.payloads);
+        return;
       }
 
+      self.payloads = [];
       resolve(self.payloads);
     });
   });
@@ -146,9 +289,14 @@ function busySleep(ms) {
   }
 }
 
-// Writes the current history to disk atomically (tmp file + rename).
-// Synchronous by design: will-quit has no reliable way to await async work.
-// Never throws; write failures are logged and retried on the next flush.
+// Writes the current history to disk as an encrypted v2 envelope, atomically
+// (tmp file + rename). Synchronous by design: will-quit has no reliable way
+// to await async work.
+//
+// Windows note: rename-over-an-existing-file can fail transiently with EPERM
+// (antivirus/indexer briefly holding the destination open). Retry a few times
+// with short waits; if it still refuses, fall back to a copy+unlink so the
+// flush lands non-atomically instead of being lost. Never throws.
 PayloadStore.prototype.flushNow = function () {
   try {
     var dir = path.dirname(this.filePath);
@@ -156,10 +304,16 @@ PayloadStore.prototype.flushNow = function () {
       fs.mkdirSync(dir, { recursive: true });
     }
 
+    var savedAt = new Date().toISOString();
+    var inner = JSON.stringify({ savedAt: savedAt, payloads: this.payloads });
+    var encrypted = this.cryptoAdapter.encrypt(inner);
+
     var body = JSON.stringify({
-      version: 1,
-      savedAt: new Date().toISOString(),
-      payloads: this.payloads
+      version: 2,
+      savedAt: savedAt,
+      encryption: 'aes-256-gcm',
+      nonce: encrypted.nonce,
+      ciphertext: encrypted.data
     }, null, 2);
 
     var tmpPath = this.filePath + '.tmp';
@@ -205,5 +359,6 @@ PayloadStore.prototype.dispose = function () {
 };
 
 module.exports = {
-  PayloadStore: PayloadStore
+  PayloadStore: PayloadStore,
+  useKeyfileAdapter: useKeyfileAdapter
 };

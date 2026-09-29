@@ -117,13 +117,18 @@ Current scaffold state:
   clear the backlog over `autoextract:clearBacklog`.
 - Persistence: the same backlog is mirrored to a JSON file
   (`<userData>/autoextract-history.json`, override with `AUTOEXTRACT_DATA_DIR`)
-  via `src/storage.js`. Writes are debounced and atomic (tmp file + rename,
+  via `src/storage.js`. The file is **encrypted at rest**: v2 envelopes carry
+  AES-256-GCM ciphertext with a fresh 96-bit nonce per flush. The key is
+  managed by Electron `safeStorage` (OS keystore: DPAPI/Keychain/libsecret)
+  when available, falling back to a random key in a 0600 sidecar keyfile
+  otherwise. Legacy v1 plaintext files load and upgrade to encrypted v2 on
+  the next flush. Tampered ciphertext is rejected as "no history" (same
+  policy as corruption). Writes are debounced and atomic (tmp file + rename,
   with a bounded rename retry and copy fallback for Windows file-locking
-  flakes); loads are tolerant (corrupt or wrong-shaped files mean "no
-  history", never a crash). The bridge and window start only after history is
-  loaded, so an early POST cannot be clobbered by the file contents; a final
-  synchronous flush runs in `will-quit`. Clearing the list also clears the
-  file. The bound (200) applies to both memory and disk.
+  flakes); loads are tolerant. The bridge and window start only after history
+  is loaded, so an early POST cannot be clobbered by the file contents; a
+  final synchronous flush runs in `will-quit`. Clearing the list also clears
+  the file. The bound (200) applies to both memory and disk.
 
 ## Extension scope and storage
 

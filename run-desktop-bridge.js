@@ -319,6 +319,12 @@ async function run() {
     });
     console.log('Phase 1 passed: bridge + window + live IPC.');
 
+    // The store flushes on a 500ms debounce, and dispose() hard-kills the app
+    // (SIGTERM = TerminateProcess on Windows, so will-quit never runs). Wait
+    // out the debounce so the history file is guaranteed to be on disk before
+    // the kill.
+    await sleep(900);
+
     await stopAndWait(runner);
     runner = null;
 

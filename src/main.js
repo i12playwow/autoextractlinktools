@@ -48,8 +48,9 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 
-const { PayloadStore } = require('./storage');
+const { PayloadStore, useKeyfileAdapter } = require('./storage');
 
 const BRIDGE_PORT = parseInt(process.env.AUTOEXTRACT_BRIDGE_PORT || '3456', 10);
 const BRIDGE_HOST = '127.0.0.1';
@@ -188,6 +189,44 @@ function handleValidPayload(payload) {
   broadcastToWindows('autoextract:payload', record);
 }
 
+// Builds the storage crypto adapter. Preference order:
+//   1. Electron safeStorage: the OS keystore manages the key (DPAPI on
+//      Windows, Keychain on macOS, libsecret on Linux). The per-flush nonce
+//      is bound into the blob so the envelope's nonce field is authenticated.
+//   2. Keyfile adapter (src/storage.js): random AES-256-GCM key in a 0600
+//      sidecar file, for environments without an OS keystore (headless
+//      Linux, some CI).
+function makeStorageAdapter(historyFilePath) {
+  try {
+    var safeStorage = require('electron').safeStorage;
+    if (safeStorage && typeof safeStorage.isEncryptionAvailable === 'function' &&
+        safeStorage.isEncryptionAvailable()) {
+      return {
+        encrypt: function (plaintext) {
+          var nonce = crypto.randomBytes(12);
+          var packed = safeStorage.encryptString(nonce.toString('hex') + ':' + plaintext);
+          return { data: packed.toString('base64'), nonce: nonce.toString('hex') };
+        },
+        decrypt: function (envelope) {
+          var opened = safeStorage.decryptString(Buffer.from(envelope.data, 'base64'));
+          var separator = opened.indexOf(':');
+          if (separator < 0) {
+            throw new Error('malformed encrypted payload');
+          }
+          if (opened.slice(0, separator) !== envelope.nonce) {
+            throw new Error('nonce mismatch');
+          }
+          return opened.slice(separator + 1);
+        }
+      };
+    }
+    console.log('AutoExtract storage: OS encryption unavailable; using keyfile adapter.');
+  } catch (error) {
+    console.log('AutoExtract storage: safeStorage unavailable; using keyfile adapter.');
+  }
+  return useKeyfileAdapter({ filePath: historyFilePath });
+}
+
 function startBridge() {
   server = createBridgeServer();
 
@@ -311,9 +350,13 @@ function createMainWindow() {
 
     // Persistent history: <userData>/autoextract-history.json by default,
     // overridable for tests/portable installs via AUTOEXTRACT_DATA_DIR.
+    // Content is encrypted at rest (safeStorage where available, keyfile
+    // AES-256-GCM otherwise).
     var dataDir = process.env.AUTOEXTRACT_DATA_DIR || app.getPath('userData');
+    var historyFilePath = path.join(dataDir, 'autoextract-history.json');
     payloadStore = new PayloadStore({
-      filePath: path.join(dataDir, 'autoextract-history.json')
+      filePath: historyFilePath,
+      cryptoAdapter: makeStorageAdapter(historyFilePath)
     });
     // The bridge and window start only after history is loaded, so an early
     // POST can never be recorded and then clobbered by the file contents.
