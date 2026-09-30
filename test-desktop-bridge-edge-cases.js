@@ -6,10 +6,13 @@
 // tests in test-desktop-contract.js.
 //
 // Two layers:
-//
-//   1. In-process: requires the real createBridgeServer() from src/main.js
+////      1. In-process: requires the real createBridgeServer() from src/main.js
 //      and runs it on 127.0.0.1:3460. src/main.js guards its Electron
-//      bootstrap, so requiring it under plain Node is safe. Covers routing
+//      bootstrap, so requiring it under plain Node is safe; when the electron
+//      package is present but un-built (CI light installs with
+//      --ignore-scripts, so its postinstall never produced path.txt), a
+//      minimal stub is installed into the require cache below, because the
+//      package's own index.js would otherwise throw on require. Covers routing
 //      (method/path/query), malformed bodies, malformed payloads, type
 //      confusion, unknown-field tolerance, content-type independence,
 //      request sequencing, and the 503 shutdown path. Also verifies that
@@ -135,6 +138,28 @@ function request(port, method, requestPath, body, contentType) {
 
 const APP_ROOT = __dirname;
 const MAIN_PATH = path.join(APP_ROOT, 'src', 'main.js');
+
+// The electron npm package's index.js throws "Electron failed to install
+// correctly" when its postinstall (the binary download) never ran — exactly
+// what `npm ci --ignore-scripts` produces in the Light CI lane — and
+// src/main.js's top-level `require('electron')` would then crash this whole
+// suite before any in-process test runs. src/main.js guards every Electron
+// touch (bootstrap checks app/whenReady, safeStorage sits in try/catch), so
+// an empty export stub is enough. Installed only when the real require
+// throws; a working electron package loads normally, and a fully absent one
+// is left alone so Node's own error surface stays intact.
+try {
+  require('electron');
+} catch (electronError) {
+  try {
+    const electronId = require.resolve('electron');
+    require.cache[electronId] = { id: 'electron', filename: electronId, loaded: true, exports: {} };
+  } catch (resolveError) {
+    // electron is not installed at all; the require below fails with
+    // Node's regular MODULE_NOT_FOUND, which is the honest error here.
+  }
+}
+
 const mainModule = require(MAIN_PATH);
 const createBridgeServer = mainModule.createBridgeServer;
 const stopBridgeForTests = mainModule.stopBridgeForTests;
