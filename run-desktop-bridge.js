@@ -234,13 +234,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Waits until the history file exists and parses as a stable v2 envelope:
-// flushes are atomic renames, so two identical reads 200ms apart imply the
-// debounced write landed and nothing is mid-write. Replaces the previous
-// blind sleep, which raced the flush on slow CI machines; the envelope's
-// ciphertext hides the payload count, so phase 2's renderer-count assertion
-// remains the content check.
-function waitForPersistedHistory(filePath) {
+// Waits until the history file exists, parses as a v2 envelope, stays
+// byte-identical across a re-read, and (when minSavedAtMs is given) carries
+// a plaintext savedAt from no earlier than that moment — flushes are atomic
+// renames, so a parseable envelope is complete, but an early flush can
+// predate the payload the next phase needs; the savedAt floor pins the wait
+// to the flush that actually contains it.
+function waitForPersistedHistory(filePath, minSavedAtMs) {
   const fsMod = require('fs');
   return new Promise((resolve, reject) => {
     let waited = 0;
@@ -262,7 +262,16 @@ function waitForPersistedHistory(filePath) {
     }
     (function check() {
       const envelope = readEnvelope();
-      if (envelope) {
+      let savedAtOk = minSavedAtMs === undefined;
+      if (envelope && !savedAtOk) {
+        const savedAtMs = Date.parse(envelope.savedAt || '');
+        if (isFinite(savedAtMs) && savedAtMs >= minSavedAtMs) {
+          savedAtOk = true;
+        } else if (!isFinite(savedAtMs)) {
+          lastState = 'unparseable savedAt';
+        }
+      }
+      if (envelope && savedAtOk) {
         const again = readEnvelope();
         if (again && JSON.stringify(again) === JSON.stringify(envelope)) {
           resolve(envelope.savedAt || '');
@@ -376,8 +385,10 @@ async function run() {
 
     // The store flushes on a 500ms debounce, and dispose() hard-kills the app
     // (SIGTERM = TerminateProcess on Windows, so will-quit never runs). Wait
-    // for a stable on-disk envelope instead of sleeping blindly.
-    await waitForPersistedHistory(path.join(smokeDataDir, 'autoextract-history.json'));
+    // for a stable on-disk envelope written no earlier than the live-check
+    // POST, so the flush that carries it has definitely landed.
+    const tAfterLiveCheck = Date.now();
+    await waitForPersistedHistory(path.join(smokeDataDir, 'autoextract-history.json'), tAfterLiveCheck);
 
     await stopAndWait(runner);
     runner = null;
