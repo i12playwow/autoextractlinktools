@@ -21,7 +21,10 @@ jobs:
   # heavy lanes (or Actions spending itself) are unavailable.
   light:
     name: Light (pure Node)
-    runs-on: ubuntu-latest
+    # Pinned ahead of the Oct 19, 2026 ubuntu-latest -> Ubuntu 26 migration
+    # (actions/runner-images#14748): the image swap must never be the reason
+    # a push goes red. Re-evaluate the pin deliberately, not mid-migration.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
@@ -50,7 +53,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # ubuntu-24.04 is pinned (same Oct 2026 migration note as the light
+        # job); windows-latest stays floating since no such transition is
+        # pending for it.
+        os: [ubuntu-24.04, windows-latest]
 
     steps:
       - name: Check out repository

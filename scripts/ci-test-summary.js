@@ -19,9 +19,11 @@
 //     changes, browser availability, billing-limited slow lanes).
 //   node scripts/ci-test-summary.js --check-mirror  verify the suite lists
 //     have not drifted apart: every counted suite must appear in `npm test`
-//     in the same order, every suite script must exist, and the workflow
-//     must run both modes. Exits non-zero on any drift; runs as a step in
-//     the Light job so drift breaks CI instead of silently skipping suites.
+//     in the same order, every suite script must exist, the workflow must
+//     run both modes, and the ubuntu runners must be pinned to ubuntu-24.04
+//     (no floating ubuntu-latest that could jump images mid-migration).
+//     Exits non-zero on any drift; runs as a step in the Light job so drift
+//     breaks CI instead of silently skipping suites.
 //
 // Exit code: 0 only if every suite passed (or skipped). Skipped suites
 // (e.g. no browser installed) count as neutral and are labeled SKIP.
@@ -127,6 +129,20 @@ function checkMirror() {
   if (fullUses < 2) {
     problems.push('workflow runs the full suite list ' + fullUses +
       ' time(s), expected at least 2 (Linux + Windows)');
+  }
+
+  // 4. Ubuntu runners are pinned: ubuntu-latest migrates to Ubuntu 26 on
+  //    Oct 19, 2026 (actions/runner-images#14748), and an image swap must
+  //    never be the reason a push goes red. The light job pins via
+  //    runs-on; the matrix job pins via its os list.
+  if (/runs-on:\s*ubuntu-latest/m.test(workflow)) {
+    problems.push('workflow still uses floating ubuntu-latest; pin to ubuntu-24.04');
+  }
+  if (!/runs-on:\s*ubuntu-24\.04/.test(workflow)) {
+    problems.push('no job pins runs-on to ubuntu-24.04 (light job expected to)');
+  }
+  if (!/os:\s*\[[^\]]*ubuntu-24\.04/.test(workflow)) {
+    problems.push('the test matrix does not pin ubuntu-24.04 in its os list');
   }
 
   if (problems.length > 0) {
