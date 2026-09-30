@@ -83,6 +83,13 @@ body {
 
 .sb-sep { flex: none; color: var(--border); }
 
+#sb-verify-activity {
+  flex: none;
+  color: var(--accent-text);
+}
+
+#sb-verify-activity[hidden] { display: none; }
+
 .controls button {
   background: var(--accent);
   color: var(--accent-text);

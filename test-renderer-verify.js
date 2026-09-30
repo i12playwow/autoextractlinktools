@@ -21,6 +21,7 @@
 //   - isStale: fresh entries, stale entries, non-alive states, clock skew
 //   - failureMessage: timeout/unreachable/unsafe-url/HTTP-code/error-string
 //     mapping and the generic fallback
+//   - activityLabel: footer background-verify indicator wording
 //   - canonicalEntry / canonicalMap: persistence sanitization (plain values
 //     only, timestamp clamping, key bounds, newest-kept bounding, Map and
 //     plain-object inputs)
@@ -141,6 +142,17 @@ const TESTS = [
     assertEqual(verify.isStale(base, verify.MIN_MS_BETWEEN_CHECKS + 1), true, 'stale');
     assertEqual(verify.isStale({ state: 'unknown' }, 10 ** 9), false, 'unknown never stale');
     assertEqual(verify.isStale(null, 10 ** 9), false, 'null never stale');
+  }],
+
+  ['activityLabel: singular, plural, and hidden states', () => {
+    assertEqual(verify.activityLabel(1), 'verifying 1 link\u2026', 'singular');
+    assertEqual(verify.activityLabel(3), 'verifying 3 links\u2026', 'plural');
+    assertEqual(verify.activityLabel(12), 'verifying 12 links\u2026', 'teens stay plural');
+    assertEqual(verify.activityLabel(0), '', 'zero hidden');
+    assertEqual(verify.activityLabel(-2), '', 'negative hidden');
+    assertEqual(verify.activityLabel(2.9), 'verifying 2 links\u2026', 'fractional floored');
+    assertEqual(verify.activityLabel(NaN), '', 'NaN hidden');
+    assertEqual(verify.activityLabel('3'), '', 'non-number hidden');
   }],
 
   ['failureMessage: maps every failure shape to human text', () => {

@@ -153,7 +153,12 @@ Current scaffold state:
   the current payload count with a live per-type link breakdown ("2 payloads
   · 12 video · 3 hls", zero types omitted, formatted by the pure
   `formatTypeCounts` in `src/renderer/filter.js` so the chips and the footer
-  share one source of truth), which the renderer tracks from its own records
+  share one source of truth). While a background auto-verify pass is in
+  flight (queued timers plus in-flight probes), the footer also shows a
+  subtle "verifying N link(s)…" note (wording from the pure `activityLabel`
+  in `src/renderer/verify.js`) that disappears once the pass settles and
+  stays hidden entirely during manual-only activity. The footer count is
+  tracked by the renderer from its own records
   and updates on every payload and on Clear. Clicking the history path asks
   main over the argument-less `autoextract:revealHistoryFolder` channel to
   `shell.showItemInFolder` the file — main uses its own stored path, so no

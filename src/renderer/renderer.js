@@ -67,6 +67,7 @@ const verifyApi = window.AutoExtractVerify || null;
 const sbBridgeEl = document.getElementById('sb-bridge');
 const sbHistoryEl = document.getElementById('sb-history');
 const sbCountEl = document.getElementById('sb-count');
+const sbActivityEl = document.getElementById('sb-verify-activity');
 
 // Every payload accepted so far, oldest first. This is the single source of
 // truth for re-renders; the DOM is a projection of records + filterState.
@@ -299,11 +300,34 @@ var AUTO_VERIFY_STAGGER_MS = 300;
 var inFlightVerifies = new Set();
 var autoVerifyTimers = [];
 
+// Background-verify activity for the footer: pending timers plus in-flight
+// background probes. Manual checks do not count (they are user-visible by
+// definition); the slot updates as timers fire and probes settle.
+var bgPendingCount = 0;
+
+function updateVerifyActivity() {
+  if (!sbActivityEl || !verifyApi) {
+    return;
+  }
+  const label = verifyApi.activityLabel(bgPendingCount);
+  sbActivityEl.textContent = label;
+  sbActivityEl.hidden = label === '';
+  const sep = document.getElementById('sb-verify-sep');
+  if (sep) {
+    sep.hidden = label === '';
+  }
+}
+
 function clearAutoVerifyTimers() {
   autoVerifyTimers.forEach(function (timer) {
     clearTimeout(timer);
   });
   autoVerifyTimers.length = 0;
+  // Timers cleared: nothing is pending anymore. Any already-in-flight
+  // probes settle silently and their completions decrement past zero
+  // harmlessly; the footer slot just hides.
+  bgPendingCount = 0;
+  updateVerifyActivity();
 }
 
 // Shared probe core for the manual button and the background pass: runs the
@@ -379,9 +403,16 @@ function scheduleAutoVerify(record) {
             showVerifiedBadge(row, new Date(status.checkedAt || at).toISOString());
           }
         });
+      }).then(function () {
+        // The probe settled (success, failure, skip, or decline): this
+        // background item is done either way.
+        bgPendingCount = Math.max(0, bgPendingCount - 1);
+        updateVerifyActivity();
       });
     }, AUTO_VERIFY_DELAY_MS + index * AUTO_VERIFY_STAGGER_MS);
     autoVerifyTimers.push(timer);
+    bgPendingCount += 1;
+    updateVerifyActivity();
   });
 }
 

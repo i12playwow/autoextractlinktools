@@ -187,12 +187,24 @@
     return out;
   }
 
+  // Human text for the footer's background-activity slot: '' hides it
+  // entirely, and any positive count reads "verifying N link(s)…". Pure so
+  // the renderer cannot drift from the tested wording.
+  function activityLabel(count) {
+    if (typeof count !== 'number' || !isFinite(count) || count <= 0) {
+      return '';
+    }
+    return 'verifying ' + Math.floor(count) +
+      (Math.floor(count) === 1 ? ' link\u2026' : ' links\u2026');
+  }
+
   var api = {
     MIN_MS_BETWEEN_CHECKS: MIN_MS_BETWEEN_CHECKS,
     VERIFY_MAX_ENTRIES: VERIFY_MAX_ENTRIES,
     canonicalResult: canonicalResult,
     canonicalEntry: canonicalEntry,
     canonicalMap: canonicalMap,
+    activityLabel: activityLabel,
     applyResult: applyResult,
     statusOf: statusOf,
     statusLabel: statusLabel,
