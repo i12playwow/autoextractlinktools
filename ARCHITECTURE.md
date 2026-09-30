@@ -147,6 +147,10 @@ Current scaffold state:
   without re-probing. Live payloads also schedule a silent background pass
   (4s out, staggered) through the same guards; background failures change
   nothing on screen — only the explicit check button can mark a row dead.
+  A toolbar "Recheck links" action runs the same pass on demand for every
+  link that was last verified before the 60s recheck window — or never —
+  through the shared per-URL guards, with the footer activity slot serving
+  as batch progress and the button disabled until the pass settles.
 - Footer status bar: a monospace strip along the bottom of the window shows
   the bridge endpoint (`host:port`), the history file path (both supplied by
   the main process over `autoextract:getAppInfo`, read-only strings), and
@@ -157,7 +161,9 @@ Current scaffold state:
   flight (queued timers plus in-flight probes), the footer also shows a
   subtle "verifying N link(s)…" note (wording from the pure `activityLabel`
   in `src/renderer/verify.js`) that disappears once the pass settles and
-  stays hidden entirely during manual-only activity. The footer count is
+  stays hidden entirely during manual-only activity (the toolbar's batch
+  recheck counts as background activity and shares the slot). The footer
+  count is
   tracked by the renderer from its own records
   and updates on every payload and on Clear. Clicking the history path asks
   main over the argument-less `autoextract:revealHistoryFolder` channel to

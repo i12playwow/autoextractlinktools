@@ -19,6 +19,7 @@
 //   - statusOf / statusLabel: unknown rows, just-now / mins / hours / days
 //     buckets, clock skew clamping, pluralization boundaries
 //   - isStale: fresh entries, stale entries, non-alive states, clock skew
+//   - needsRecheck: unknown-or-stale selection rule for the batch action
 //   - failureMessage: timeout/unreachable/unsafe-url/HTTP-code/error-string
 //     mapping and the generic fallback
 //   - activityLabel: footer background-verify indicator wording
@@ -142,6 +143,15 @@ const TESTS = [
     assertEqual(verify.isStale(base, verify.MIN_MS_BETWEEN_CHECKS + 1), true, 'stale');
     assertEqual(verify.isStale({ state: 'unknown' }, 10 ** 9), false, 'unknown never stale');
     assertEqual(verify.isStale(null, 10 ** 9), false, 'null never stale');
+  }],
+
+  ['needsRecheck: unknown links need a check, fresh ones do not', () => {
+    const base = { state: 'alive', code: 2, note: null, checkedAt: 0, checking: false };
+    assertEqual(verify.needsRecheck(verify.statusOf(new Map(), 'k'), 10 ** 9), true, 'unknown -> recheck');
+    assertEqual(verify.needsRecheck(null, 10 ** 9), true, 'null status -> recheck');
+    assertEqual(verify.needsRecheck(base, 10_000), false, 'fresh -> skip');
+    assertEqual(verify.needsRecheck(base, verify.MIN_MS_BETWEEN_CHECKS), false, 'exactly the window -> skip');
+    assertEqual(verify.needsRecheck(base, verify.MIN_MS_BETWEEN_CHECKS + 1), true, 'past the window -> recheck');
   }],
 
   ['activityLabel: singular, plural, and hidden states', () => {

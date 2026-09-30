@@ -46,6 +46,9 @@
 //     reaches the encrypted history file), and the stored map is pulled over
 //     autoextract:getVerifyHistory before the backlog drains, so restored
 //     rows show their last-verified badges immediately after a restart.
+//   - Recheck links: a toolbar action that re-verifies every link whose last
+//     verification is older than the 60s recheck window (or that has never
+//     been verified), reusing the footer activity indicator for progress.
 
 'use strict';
 
@@ -53,6 +56,7 @@ const listEl = document.getElementById('list');
 const emptyEl = document.getElementById('empty');
 const noMatchEl = document.getElementById('no-match');
 const clearBtn = document.getElementById('clear-btn');
+const recheckBtn = document.getElementById('recheck-btn');
 const statusEl = document.getElementById('bridge-status');
 const filterBarEl = document.getElementById('filter-bar');
 const searchInput = document.getElementById('search-input');
@@ -305,6 +309,10 @@ var autoVerifyTimers = [];
 // definition); the slot updates as timers fire and probes settle.
 var bgPendingCount = 0;
 
+// True while the toolbar's batch re-verify is draining its target list;
+// keeps double-clicks from stacking passes and Clear resets it.
+var recheckRunning = false;
+
 function updateVerifyActivity() {
   if (!sbActivityEl || !verifyApi) {
     return;
@@ -411,6 +419,8 @@ function scheduleAutoVerify(record) {
       });
     }, AUTO_VERIFY_DELAY_MS + index * AUTO_VERIFY_STAGGER_MS);
     autoVerifyTimers.push(timer);
+    // Counted as background activity (bgPendingCount) so the footer's
+    // "verifying N links\u2026" slot doubles as batch progress.
     bgPendingCount += 1;
     updateVerifyActivity();
   });
@@ -445,6 +455,73 @@ function runVerify(row, url, button) {
       button.disabled = false;
       button.textContent = 'check';
     }
+  });
+}
+
+// Batch re-verify: every link older than the recheck window (or never
+// verified) is probed through the same shared core the manual check uses,
+// so per-URL in-flight guards and the recheck lock apply unchanged. Progress
+// rides the footer's background-activity counter; successes repaint their
+// rows' badges and persist. The button disables itself for the duration;
+// Clear resets it (its handler re-enables this button).
+function recheckStaleLinks() {
+  if (recheckRunning || !verifyApi || !window.autoextract ||
+      typeof window.autoextract.verifyUrl !== 'function') {
+    return;
+  }
+  const targets = [];
+  const now = Date.now();
+  records.forEach(function (record) {
+    (record && Array.isArray(record.links) ? record.links : []).forEach(function (link) {
+      if (!link || typeof link.url !== 'string' || !link.url) {
+        return;
+      }
+      if (targets.indexOf(link.url) === -1 &&
+          verifyApi.needsRecheck(verifyApi.statusOf(verifyState, link.url), now)) {
+        targets.push(link.url);
+      }
+    });
+  });
+  if (targets.length === 0) {
+    return;
+  }
+  recheckRunning = true;
+  if (recheckBtn) {
+    recheckBtn.disabled = true;
+  }
+  bgPendingCount += targets.length;
+  updateVerifyActivity();
+  let settled = 0;
+  function settleOne() {
+    settled += 1;
+    bgPendingCount = Math.max(0, bgPendingCount - 1);
+    updateVerifyActivity();
+    if (settled === targets.length) {
+      recheckRunning = false;
+      if (recheckBtn) {
+        recheckBtn.disabled = false;
+      }
+    }
+  }
+  targets.forEach(function (url) {
+    const at = Date.now();
+    requestVerify(url, at).then(function (outcome) {
+      if (outcome !== true) {
+        return;
+      }
+      // Successes repaint whichever row now shows this URL and persist,
+      // exactly like the background pass; failures stay silent so a batch
+      // recheck can never brand rows dead.
+      persistVerify(url);
+      const status = verifyApi.statusOf(verifyState, url);
+      listEl.querySelectorAll('.link-row').forEach(function (row) {
+        const urlSpan = row.querySelector('.link-url');
+        if (urlSpan && urlSpan.dataset.autoextractUrl === url) {
+          row.classList.remove('verify-dead');
+          showVerifiedBadge(row, new Date(status.checkedAt || at).toISOString());
+        }
+      });
+    }).then(settleOne);
   });
 }
 
@@ -751,6 +828,7 @@ function init() {
 
   if (!window.autoextract) {
     if (clearBtn) { clearBtn.disabled = true; }
+    if (recheckBtn) { recheckBtn.disabled = true; }
     updateEmptyState();
     return;
   }
@@ -821,6 +899,10 @@ function init() {
       seenPayloads.clear();
       verifyState.clear();
       clearAutoVerifyTimers();
+      // Cancels any batch recheck too: the footer slot empties above and
+      // the toolbar button unlocks for the now-empty list.
+      recheckRunning = false;
+      if (recheckBtn) { recheckBtn.disabled = false; }
       // The persisted verify map is wiped by the same clearBacklog call
       // above: main's clear handler empties the payload store, verify map
       // included.
@@ -829,6 +911,10 @@ function init() {
       updateEmptyState();
       updateFilterStatus();
     });
+  }
+
+  if (recheckBtn) {
+    recheckBtn.addEventListener('click', recheckStaleLinks);
   }
 
   window.addEventListener('beforeunload', function () {

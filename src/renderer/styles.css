@@ -102,6 +102,11 @@ body {
 
 .controls button:hover { filter: brightness(1.15); }
 
+.controls button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 #list {
   flex: 1;
   overflow-y: auto;

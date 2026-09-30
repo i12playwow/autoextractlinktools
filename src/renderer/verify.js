@@ -118,6 +118,16 @@
     return t - (status.checkedAt || 0) > MIN_MS_BETWEEN_CHECKS;
   }
 
+  // True when a link should be re-checked by the toolbar's batch action:
+  // either never successfully verified (unknown) or last verified longer
+  // than the 60s recheck window ago. Pure so the selection can be tested.
+  function needsRecheck(status, now) {
+    if (!status || status.state !== 'alive') {
+      return true;
+    }
+    return isStale(status, now);
+  }
+
   // Human text for a failed {ok:false} answer (badge title + status line).
   // Failures are intentionally NOT stored by the renderer.
   function failureMessage(raw) {
@@ -209,6 +219,7 @@
     statusOf: statusOf,
     statusLabel: statusLabel,
     isStale: isStale,
+    needsRecheck: needsRecheck,
     failureMessage: failureMessage
   };
 
