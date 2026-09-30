@@ -148,6 +148,41 @@ if (typeof createBridgeServer !== 'function') {
 const PORT = 3460;
 const SHUTDOWN_PORT = 3462;
 
+// Loopback HTTP server for exercising the real defaultFetch path inside
+// probeUrl: /ok.mp4 answers 200, /missing.mp4 answers 404, and /moved.mp4
+// 302-redirects to /ok.mp4. Port 0 lets the OS pick a free port.
+async function withProbeServer(fn) {
+  const server = http.createServer((req, res) => {
+    if (req.url === '/ok.mp4') {
+      res.writeHead(200, { 'Content-Type': 'video/mp4' });
+      res.end('x');
+      return;
+    }
+    if (req.url === '/missing.mp4') {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('nope');
+      return;
+    }
+    if (req.url === '/moved.mp4') {
+      // Same absolute URL a client behind the loopback can re-request.
+      res.writeHead(302, { Location: 'http://127.0.0.1:' + server.address().port + '/ok.mp4' });
+      res.end();
+      return;
+    }
+    res.writeHead(500);
+    res.end();
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    await fn('http://127.0.0.1:' + server.address().port);
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function withServer(port, fn) {
   const server = createBridgeServer();
   await new Promise((resolve, reject) => {
@@ -286,6 +321,118 @@ async function runInProcessTests() {
     const rejected = unsafe.filter((raw) => mainModule.isSafeExternalUrl(raw) !== null);
     expect(rejected.length, 0, 'unsafe inputs must all be rejected, got ' + JSON.stringify(rejected));
     pass('non-http(s), unparsable, and non-string inputs are rejected');
+  }
+
+  section('in-process: probeUrl (link verification probe)');
+
+  {
+    const probe = mainModule.probeUrl;
+
+    // Builds a probe whose HTTP layer is a scripted stub: no sockets, full
+    // control over status codes, redirect locations, and transport errors.
+    function probeWith(handler) {
+      const calls = [];
+      const fetch = async (url, method, timeoutMs) => {
+        calls.push({ url: url, method: method, timeoutMs: timeoutMs });
+        return handler(url, method);
+      };
+      return {
+        calls: calls,
+        run: (url) => probe(url, { fetch: fetch, timeoutMs: 50 })
+      };
+    }
+
+    let h = await probeWith(() => ({ statusCode: 200, location: null }));
+    let r = await h.run('https://cdn.example.com/v.mp4');
+    expect(r.ok, true, 'HEAD 200 ok');
+    expect(r.status, 2, 'HEAD 200 status class');
+    expect(r.code, 200, 'HEAD 200 code');
+    expect(h.calls.length, 1, 'single HEAD request');
+    expect(h.calls[0].method, 'HEAD', 'HEAD method used first');
+    pass('HEAD 2xx resolves ok with status class 2');
+
+    h = await probeWith(() => ({ statusCode: 404, location: null }));
+    r = await h.run('https://cdn.example.com/gone.mp4');
+    expect(r.ok, false, '404 not ok');
+    expect(r.code, 404, '404 code reported');
+    expect(h.calls.length, 1, 'no GET fallback after a real HTTP 404');
+    pass('HEAD 404 reports dead without a GET fallback');
+
+    h = await probeWith((url, method) => method === 'HEAD'
+      ? { statusCode: 405, location: null }
+      : { statusCode: 200, location: null });
+    r = await h.run('https://cdn.example.com/v.mp4');
+    expect(r.ok, true, '405 then GET 200 is ok');
+    expect(h.calls.length, 2, 'GET fallback happened');
+    expect(h.calls[1].method, 'GET', 'fallback method is GET');
+    pass('HEAD 405 falls back to GET and recovers');
+
+    h = await probeWith(() => ({ statusCode: 0, error: 'unreachable' }));
+    r = await h.run('https://cdn.example.com/v.mp4');
+    expect(r.ok, false, 'double transport failure is not ok');
+    expect(r.error, 'unreachable', 'unreachable kind');
+    expect(h.calls.length, 2, 'one GET retry after transport failure');
+    pass('transport failure falls back to GET once, then reports unreachable');
+
+    h = await probeWith(() => ({ statusCode: 0, error: 'timeout' }));
+    r = await h.run('https://cdn.example.com/v.mp4');
+    expect(r.ok, false, 'timeout is not ok');
+    expect(r.error, 'timeout', 'timeout kind preserved');
+    pass('timeout is reported as timeout');
+
+    h = await probeWith((url) => url.indexOf('hop1') !== -1
+      ? { statusCode: 302, location: 'https://cdn.example.com/final.mp4' }
+      : { statusCode: 200, location: null });
+    r = await h.run('https://origin.example.com/hop1/v.mp4');
+    expect(r.ok, true, 'redirect chain resolves ok');
+    expect(h.calls.length, 2, 'two hops made');
+    expect(h.calls[1].url, 'https://cdn.example.com/final.mp4', 'absolute Location followed');
+    pass('3xx redirects are followed with absolute URL resolution');
+
+    h = await probeWith((url) => url.indexOf('hop1') !== -1
+      ? { statusCode: 301, location: '/final.mp4' }
+      : { statusCode: 200, location: null });
+    r = await h.run('https://origin.example.com/hop1/v.mp4');
+    expect(h.calls[1].url, 'https://origin.example.com/final.mp4', 'relative Location resolved against current hop');
+    pass('relative redirect Locations resolve against the current hop');
+
+    h = await probeWith(() => ({ statusCode: 302, location: 'file:///C:/x' }));
+    r = await h.run('https://origin.example.com/v.mp4');
+    expect(r.ok, false, 'unsafe redirect target rejected');
+    expect(r.error, 'unsafe url', 'unsafe redirect error kind');
+    pass('redirects to non-http(s) schemes are rejected');
+
+    h = await probeWith(() => ({ statusCode: 302, location: 'https://loop.example.com/a' }));
+    r = await h.run('https://loop.example.com/a');
+    expect(r.ok, false, 'redirect loop is not ok');
+    expect(r.error, 'redirect loop', 'loop error kind');
+    pass('redirect loops are bounded');
+
+    h = await probeWith(() => ({ statusCode: 200, location: null }));
+    r = await h.run('javascript:alert(1)');
+    expect(r.ok, false, 'unsafe input URL rejected');
+    expect(h.calls.length, 0, 'no request made for unsafe input');
+    pass('unsafe input URLs never reach the network');
+
+    h = await probeWith(() => ({ statusCode: 302, location: null }));
+    r = await h.run('https://cdn.example.com/v.mp4');
+    expect(r.ok, true, '3xx without Location is followable');
+    expect(r.status, 3, 'status class 3 without Location');
+    pass('3xx without Location resolves as a followable redirect');
+
+    // One end-to-end test through the real defaultFetch against a loopback
+    // server, so the actual http/https request path is exercised too.
+    await withProbeServer(async (base) => {
+      const ok = await probe(base + '/ok.mp4');
+      expect(ok.ok, true, 'real 200 is ok');
+      expect(ok.code, 200, 'real 200 code');
+      const missing = await probe(base + '/missing.mp4');
+      expect(missing.ok, false, 'real 404 is dead');
+      expect(missing.code, 404, 'real 404 code');
+      const moved = await probe(base + '/moved.mp4');
+      expect(moved.ok, true, 'real redirect resolves ok');
+    });
+    pass('real loopback server: 200, 404, and redirect behave end to end');
   }
 
   section('in-process: protocol and sequencing');

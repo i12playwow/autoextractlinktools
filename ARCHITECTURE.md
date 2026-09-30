@@ -122,6 +122,21 @@ Current scaffold state:
   allowlist (`isSafeExternalUrl`) before `shell.openExternal` is called, so no
   other scheme can reach the operating system; the renderer cannot bypass this
   because the sandboxed preload is the only IPC surface.
+- Per-row link verification: each row has a check button that asks the main
+  process over `autoextract:verifyUrl` to probe the URL with a HEAD request
+  (one-shot GET fallback for servers that answer HEAD with a transport error
+  or 405/501, bounded redirect chain with every hop re-validated through
+  `isSafeExternalUrl`, cycle detection, 15s timeout). The renderer never
+  touches the network. Only successes are stored — HTTP >= 400 and transport
+  failures render a transient `dead` badge plus a note that the next
+  re-render clears, so a transient blip can never permanently brand a row —
+  while a success marks the row `alive` with a last-verified age ("verified
+  4 mins ago") in the badge title. The display rules (canonicalization, the
+  60s recheck lock, label buckets, staleness) are pure functions in
+  `src/renderer/verify.js`, loaded as a CSP-safe script and unit-tested
+  under Node by `test-renderer-verify.js`; the probe itself is unit-tested
+  with scripted fetches plus one real loopback-server round trip in the
+  bridge edge-case suite.
 - Filtering in the window: a search box matches link URLs and page titles/URLs
   case-insensitively, and type chips (video/audio/hls/dash/other, with live
   per-type counts) narrow which link rows are shown. The matching rules are

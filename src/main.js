@@ -47,6 +47,7 @@
 
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const http = require('http');
+const https = require('https');
 const path = require('path');
 const crypto = require('crypto');
 
@@ -68,6 +69,10 @@ let payloadStore = null;
 let server = null;
 let shuttingDown = false;
 let mainWindow = null;
+
+// History file path for the footer status bar. Set in main() once the data
+// directory is known; empty string until then (renderer shows a blank slot).
+let historyFilePathForDisplay = '';
 
 function isValidLinkPayload(payload) {
   if (!payload || typeof payload !== 'object') {
@@ -298,6 +303,117 @@ function isSafeExternalUrl(raw) {
   return parsed.href;
 }
 
+// ---------------------------------------------------------------------------
+// Link verification (renderer "check" action)
+// ---------------------------------------------------------------------------
+
+// One real HTTP(S) request. Resolves { statusCode, location?, method,
+// error? } and never rejects; the response body is deliberately not read —
+// only the status line and Location header are needed, so the response is
+// destroyed immediately after classification to avoid draining streams.
+function defaultFetch(url, method, timeoutMs) {
+  return new Promise(function (resolve) {
+    var parsed = null;
+    try {
+      parsed = new URL(url);
+    } catch (error) {
+      resolve({ statusCode: 0, method: method, error: 'unreachable' });
+      return;
+    }
+    var transport = parsed.protocol === 'https:' ? https : http;
+    var request = transport.request(parsed, { method: method }, function (response) {
+      response.destroy();
+      resolve({
+        statusCode: response.statusCode,
+        location: response.headers && response.headers.location ? response.headers.location : null,
+        method: method
+      });
+    });
+    request.setTimeout(timeoutMs, function () {
+      request.destroy(new Error('timeout'));
+    });
+    request.on('error', function (error) {
+      resolve({
+        statusCode: 0,
+        method: method,
+        error: error && error.message === 'timeout' ? 'timeout' : 'unreachable'
+      });
+    });
+    request.end();
+  });
+}
+
+// Classifies a URL's reachability for the row badge. HEAD first (cheap, no
+// body), with a one-shot GET fallback for servers that answer HEAD with a
+// transport error or 405/501, and a bounded redirect chain in which every
+// hop is re-validated through isSafeExternalUrl (so a redirect can never
+// smuggle a non-http(s) scheme into the request path). Never throws and
+// never rejects; every outcome is a plain object the renderer can render:
+//   { ok: true,  status: 2|3, code: 204, note: 'HEAD 204' }
+//   { ok: false, code: 404 }                  (HTTP >= 400 after GET fallback)
+//   { ok: false, error: 'timeout' | 'unreachable' | 'unsafe url' | ... }
+// `deps` is injectable for tests: { fetch, timeoutMs }.
+function probeUrl(rawUrl, deps) {
+  var fetchImpl = deps && typeof deps.fetch === 'function' ? deps.fetch : defaultFetch;
+  var timeoutMs = deps && typeof deps.timeoutMs === 'number' ? deps.timeoutMs : 15 * 1000;
+  var visits = 0;
+
+  // `visited` carries every URL already requested in this chain, so cycles
+  // (a -> a or a -> b -> a) are caught before the hop budget silently turns
+  // them into a "followable 3xx" false positive.
+  function attempt(current, redirectsLeft, method, visited) {
+    var safe = isSafeExternalUrl(current);
+    if (!safe) {
+      return Promise.resolve({ ok: false, error: 'unsafe url' });
+    }
+    visited[safe] = true;
+    visits += 1;
+    if (visits > 8) {
+      return Promise.resolve({ ok: false, error: 'redirect loop' });
+    }
+    return fetchImpl(safe, method, timeoutMs).then(function (res) {
+      var code = res && typeof res.statusCode === 'number' ? res.statusCode : 0;
+      if (code >= 300 && code < 400) {
+        var location = res && typeof res.location === 'string' ? res.location : '';
+        if (redirectsLeft > 0 && location) {
+          var next = null;
+          try {
+            next = new URL(location, safe).href;
+          } catch (error) {
+            next = null;
+          }
+          if (!next) {
+            return { ok: false, error: 'invalid redirect' };
+          }
+          if (visited[next]) {
+            return { ok: false, error: 'redirect loop' };
+          }
+          return attempt(next, redirectsLeft - 1, 'HEAD', visited);
+        }
+        // No Location (or out of hops): a 3xx the player could still follow.
+        return { ok: true, status: 3, code: code, note: 'redirect ' + code };
+      }
+      if (code >= 200 && code < 300) {
+        return { ok: true, status: 2, code: code, note: method + ' ' + code };
+      }
+      if (code === 0) {
+        // Transport-level failure: HEAD is sometimes unsupported; retry with
+        // GET once before calling the URL unreachable.
+        if (method === 'HEAD') {
+          return attempt(current, redirectsLeft, 'GET', visited);
+        }
+        return { ok: false, error: res && res.error === 'timeout' ? 'timeout' : 'unreachable' };
+      }
+      if (method === 'HEAD' && (code === 405 || code === 501)) {
+        return attempt(current, redirectsLeft, 'GET', visited);
+      }
+      return { ok: false, code: code };
+    });
+  }
+
+  return attempt(String(rawUrl), 3, 'HEAD', {});
+}
+
 function registerIpc() {
   // Renderer asks for everything received so far (history that predates the
   // window). Returns a copy so the renderer cannot mutate the backlog.
@@ -332,6 +448,24 @@ function registerIpc() {
     }, function (error) {
       return { ok: false, error: (error && error.message) || 'open failed' };
     });
+  });
+
+  // Renderer "check this link" action. Runs in main because the sandboxed
+  // renderer has no network access; the URL is validated here through
+  // isSafeExternalUrl before any request is made. Failures resolve (never
+  // reject) as plain objects so the renderer can render every shape.
+  ipcMain.handle('autoextract:verifyUrl', function (_event, rawUrl) {
+    return probeUrl(rawUrl);
+  });
+
+  // Display facts for the footer status bar: where the bridge listens and
+  // which file backs the history. Both are configuration, not secrets, and
+  // the renderer gets copies (strings), not object references.
+  ipcMain.handle('autoextract:getAppInfo', function () {
+    return {
+      bridgeHost: BRIDGE_HOST + ':' + BRIDGE_PORT,
+      historyFile: historyFilePathForDisplay
+    };
   });
 }
 
@@ -399,6 +533,7 @@ function createMainWindow() {
       filePath: historyFilePath,
       cryptoAdapter: makeStorageAdapter(historyFilePath)
     });
+    historyFilePathForDisplay = historyFilePath;
     // The bridge and window start only after history is loaded, so an early
     // POST can never be recorded and then clobbered by the file contents.
     payloadStore.load().then(function (restored) {
@@ -439,5 +574,6 @@ function createMainWindow() {
 module.exports = {
   createBridgeServer: createBridgeServer,
   stopBridgeForTests: stopBridgeForTests,
-  isSafeExternalUrl: isSafeExternalUrl
+  isSafeExternalUrl: isSafeExternalUrl,
+  probeUrl: probeUrl
 };

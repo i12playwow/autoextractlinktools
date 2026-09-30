@@ -55,6 +55,7 @@ body {
 
 .status.ok { color: #7dd487; }
 
+
 .controls button {
   background: var(--accent);
   color: var(--accent-text);
@@ -189,6 +190,39 @@ body {
 .row-btn.copied {
   color: #7dd487;
   border-color: #7dd487;
+}
+
+.row-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.verify-badge {
+  flex: none;
+  font-size: 9px;
+  padding: 0 6px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.verify-badge.alive {
+  color: #7dd487;
+  border: 1px solid #7dd487;
+}
+
+.verify-badge.dead {
+  color: #ff8a80;
+  border: 1px solid #ff8a80;
+}
+
+.verify-note {
+  font-size: 10px;
+  color: #ff8a80;
+}
+
+.link-row.verify-dead .link-url {
+  color: var(--text-dim);
 }
 
 #filter-bar {

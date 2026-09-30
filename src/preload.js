@@ -9,6 +9,13 @@
 //   - clearBacklog(): Promise<void>           -> clear the main-process backlog
 //   - openExternal(url): Promise<{ok, error?}> -> open an http/https URL in
 //     the system browser (main re-validates before shell.openExternal)
+//   - verifyUrl(url): Promise<result>         -> reachability check for one
+//     http/https URL, performed by main (HEAD with GET fallback; see
+//     src/main.js). The renderer gets a plain result object, never a raw
+//     response or socket. Only main touches the network.
+//   - getAppInfo(): Promise<{bridgeHost, historyFile}> -> display facts for
+//     the footer status bar (endpoint and history file path). Read-only and
+//     resolved once at startup.
 //
 // The renderer has no Node, no direct ipcRenderer, and no way to invoke any
 // other channel: this file is the entire attack surface.
@@ -45,5 +52,13 @@ contextBridge.exposeInMainWorld('autoextract', {
 
   openExternal: function (url) {
     return ipcRenderer.invoke('autoextract:openExternal', url);
+  },
+
+  verifyUrl: function (url) {
+    return ipcRenderer.invoke('autoextract:verifyUrl', url);
+  },
+
+  getAppInfo: function () {
+    return ipcRenderer.invoke('autoextract:getAppInfo');
   }
 });

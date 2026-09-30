@@ -25,6 +25,11 @@
 //     outside Electron), the UI degrades to a disabled state instead of
 //     pretending to work. If filter.js failed to load, the filter bar hides
 //     and the window behaves exactly as before filters existed.
+//   - Per-row verification: the check button asks the main process to probe
+//     the URL (HEAD with a GET fallback) over autoextract:verifyUrl; the
+//     pure display rules live in verify.js (window.AutoExtractVerify,
+//     unit-tested by test-renderer-verify.js). Only successes are stored, so
+//     a transient failure can never permanently brand a row dead.
 
 'use strict';
 
@@ -39,6 +44,7 @@ const typeChipsEl = document.getElementById('type-chips');
 const filterStatusEl = document.getElementById('filter-status');
 
 const filterApi = window.AutoExtractFilter || null;
+const verifyApi = window.AutoExtractVerify || null;
 
 // Every payload accepted so far, oldest first. This is the single source of
 // truth for re-renders; the DOM is a projection of records + filterState.
@@ -142,8 +148,111 @@ function flashCopied(button) {
   }, 1200);
 }
 
-// Builds the Copy / Open action cluster for one link row.
-function makeRowActions(url) {
+// ---- Link verification (per-row "check" action) ----
+//
+// verifyState maps URL -> the last success answer from main, through the
+// pure helpers in verify.js. Failures are never stored: they render as a
+// transient badge + status note that the next re-render clears.
+
+const verifyState = new Map();
+
+function formatVerifiedAt(iso) {
+  try {
+    return 'last verified ' + new Date(iso).toLocaleString();
+  } catch (error) {
+    return '';
+  }
+}
+
+// The badge span for a row, created on first use so both the live answer
+// path and the re-render restore path share one idempotent helper.
+function ensureBadge(row) {
+  let badge = row.querySelector('.verify-badge');
+  if (!badge) {
+    badge = document.createElement('span');
+    row.appendChild(badge);
+  }
+  return badge;
+}
+
+function showVerifiedBadge(row, iso) {
+  if (!row || !verifyApi) { return; }
+  const badge = ensureBadge(row);
+  badge.textContent = 'alive';
+  badge.className = 'verify-badge alive';
+  badge.hidden = false;
+  const label = verifyApi.statusLabel({ state: 'alive', checkedAt: Date.parse(iso) || 0 });
+  badge.title = (label || 'verified') + ' \u00b7 ' + formatVerifiedAt(iso);
+}
+
+// Transient dead marking: a red badge with the human failure text plus an
+// unobtrusive note under the row. Nothing is stored, so a filter keystroke
+// or the next payload clears it.
+function showDeadBadge(row, message) {
+  if (!row) { return; }
+  const badge = ensureBadge(row);
+  badge.textContent = 'dead';
+  badge.className = 'verify-badge dead';
+  badge.hidden = false;
+  badge.title = message;
+  const previous = row.querySelector('.verify-note');
+  if (previous) { previous.remove(); }
+  const note = document.createElement('div');
+  note.className = 'verify-note';
+  note.textContent = message + ' \u00b7 checked just now';
+  row.appendChild(note);
+  row.classList.add('verify-dead');
+}
+
+// Restores the stored alive mark for a URL, if any. Runs on every re-render
+// so badges and last-verified labels survive filter typing.
+function attachVerifyStatus(row, url) {
+  if (!verifyApi || !row) { return; }
+  const note = row.querySelector('.verify-note');
+  if (note) { note.remove(); }
+  row.classList.remove('verify-dead');
+  const status = verifyApi.statusOf(verifyState, url);
+  if (status.state === 'alive') {
+    showVerifiedBadge(row, new Date(status.checkedAt).toISOString());
+  }
+}
+
+// Probes one row's URL over the preload channel. The button is disabled for
+// the duration; the pure module's recheck lock absorbs overlapping answers.
+function runVerify(row, url, button) {
+  if (!window.autoextract || typeof window.autoextract.verifyUrl !== 'function' || !verifyApi) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'checking';
+  }
+  const at = Date.now();
+  window.autoextract.verifyUrl(url).then(function (raw) {
+    if (verifyApi.applyResult(verifyState, url, raw, at)) {
+      row.classList.remove('verify-dead');
+      showVerifiedBadge(row, new Date(at).toISOString());
+    } else if (raw && raw.ok === false) {
+      showDeadBadge(row, verifyApi.failureMessage(raw));
+    } else if (raw && raw.ok === true) {
+      // Success the store declined (recheck window): refresh the label only.
+      const status = verifyApi.statusOf(verifyState, url);
+      showVerifiedBadge(row, new Date(status.checkedAt || at).toISOString());
+    } else {
+      showDeadBadge(row, verifyApi.failureMessage(raw));
+    }
+  }).catch(function () {
+    showDeadBadge(row, 'Check failed');
+  }).then(function () {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'check';
+    }
+  });
+}
+
+// Builds the Copy / Open / Check action cluster for one link row.
+function makeRowActions(url, row) {
   const actions = document.createElement('div');
   actions.className = 'row-actions';
 
@@ -175,6 +284,19 @@ function makeRowActions(url) {
       window.autoextract.openExternal(url).catch(function () {});
     });
     actions.appendChild(openBtn);
+  }
+
+  if (window.autoextract && typeof window.autoextract.verifyUrl === 'function' && verifyApi) {
+    const checkBtn = document.createElement('button');
+    checkBtn.type = 'button';
+    checkBtn.className = 'row-btn verify-btn';
+    checkBtn.textContent = 'check';
+    checkBtn.title = 'Verify this link now (HEAD request from the desktop app)';
+    checkBtn.addEventListener('click', function (event) {
+      event.stopPropagation();
+      runVerify(row, url, checkBtn);
+    });
+    actions.appendChild(checkBtn);
   }
 
   return actions;
@@ -213,6 +335,7 @@ function makeLinkRow(link, isVisible) {
   url.className = 'link-url clickable';
   url.textContent = '\u200e' + link.url;
   url.title = link.url + ' (click to copy)';
+  url.dataset.autoextractUrl = String(link.url);
   url.addEventListener('click', function () {
     copyTextToClipboard(link.url).then(function (ok) {
       if (ok) { url.title = link.url + ' (copied)'; }
@@ -222,8 +345,10 @@ function makeLinkRow(link, isVisible) {
 
   row.appendChild(detail);
 
+  attachVerifyStatus(row, String(link.url));
+
   if (typeof link.url === 'string' && link.url) {
-    row.appendChild(makeRowActions(link.url));
+    row.appendChild(makeRowActions(link.url, row));
   }
   return row;
 }
@@ -294,6 +419,14 @@ function renderAll() {
       return;
     }
     renderPayload(record);
+  });
+  // Re-attach stored verification state; the DOM was just rebuilt, so every
+  // row starts without its alive badge.
+  listEl.querySelectorAll('.link-row').forEach(function (row) {
+    const urlSpan = row.querySelector('.link-url');
+    if (urlSpan && urlSpan.dataset.autoextractUrl) {
+      attachVerifyStatus(row, urlSpan.dataset.autoextractUrl);
+    }
   });
   updateEmptyState();
   updateFilterStatus();
@@ -453,6 +586,7 @@ function init() {
       listEl.innerHTML = '';
       records.length = 0;
       seenPayloads.clear();
+      verifyState.clear();
       refreshChipCounts();
       updateEmptyState();
       updateFilterStatus();

@@ -23,7 +23,7 @@
     "dev:desktop": "electron src",
     "build:extension": "node chrome-extension/build/make-shared.js",
     "clean:extension": "node -e \"const fs=require('fs'); try{ fs.rmSync('chrome-extension/shared',{recursive:true}); }catch(e){}\"",
-    "test": "node test-desktop-contract.js && node test-shared-detect.js && node test-storage.js && node test-renderer-filter.js && node test-desktop-bridge-edge-cases.js && node test-cli-extract.js"
+    "test": "node test-desktop-contract.js && node test-shared-detect.js && node test-storage.js && node test-renderer-filter.js && node test-renderer-verify.js && node test-desktop-bridge-edge-cases.js && node test-cli-extract.js"
   },
   "keywords": [
     "video",
