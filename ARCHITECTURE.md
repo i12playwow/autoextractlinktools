@@ -137,6 +137,16 @@ Current scaffold state:
   under Node by `test-renderer-verify.js`; the probe itself is unit-tested
   with scripted fetches plus one real loopback-server round trip in the
   bridge edge-case suite.
+- Verification persistence and auto-verify: every successful probe is
+  reported over `autoextract:recordVerify` and stored — alive-only and
+  canonicalized through the shared pure module — in a bounded verify map
+  inside the same encrypted history document (cleared with the history,
+  absent for legacy v1 files, re-validated on load). The renderer pulls the
+  map over `autoextract:getVerifyHistory` before the backlog drains, so
+  restored rows show their last-verified badges immediately after a restart
+  without re-probing. Live payloads also schedule a silent background pass
+  (4s out, staggered) through the same guards; background failures change
+  nothing on screen — only the explicit check button can mark a row dead.
 - Footer status bar: a monospace strip along the bottom of the window shows
   the bridge endpoint (`host:port`), the history file path (both supplied by
   the main process over `autoextract:getAppInfo`, read-only strings), and

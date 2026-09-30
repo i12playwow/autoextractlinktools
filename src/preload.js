@@ -20,6 +20,12 @@
 //     file's folder in the OS file manager (file selected). Takes no
 //     argument: main reveals its own stored path, so no file: URL is ever
 //     passed over IPC.
+//   - recordVerify(url, result): Promise<{ok}>      -> report a successful
+//     verification so its timestamp persists in the encrypted history file
+//     (alive-only; main canonicalizes before storing, failures are ignored).
+//   - getVerifyHistory(): Promise<{url: {code, checkedAt}}> -> the persisted
+//     verify map, pulled before the backlog so restored rows show their
+//     last-verified badges immediately after a restart.
 //
 // The renderer has no Node, no direct ipcRenderer, and no way to invoke any
 // other channel: this file is the entire attack surface.
@@ -68,5 +74,13 @@ contextBridge.exposeInMainWorld('autoextract', {
 
   revealHistoryFolder: function () {
     return ipcRenderer.invoke('autoextract:revealHistoryFolder');
+  },
+
+  recordVerify: function (url, result) {
+    return ipcRenderer.invoke('autoextract:recordVerify', url, result);
+  },
+
+  getVerifyHistory: function () {
+    return ipcRenderer.invoke('autoextract:getVerifyHistory');
   }
 });

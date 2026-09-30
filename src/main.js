@@ -52,6 +52,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { PayloadStore, useKeyfileAdapter } = require('./storage');
+const verifyDisplay = require('./renderer/verify');
 
 const BRIDGE_PORT = parseInt(process.env.AUTOEXTRACT_BRIDGE_PORT || '3456', 10);
 const BRIDGE_HOST = '127.0.0.1';
@@ -466,6 +467,41 @@ function registerIpc() {
       bridgeHost: BRIDGE_HOST + ':' + BRIDGE_PORT,
       historyFile: historyFilePathForDisplay
     };
+  });
+
+  // Renderer reports a verification result. Only successes are persisted
+  // (the alive-only rule), canonicalized through the shared pure module
+  // before anything reaches the encrypted history file; the payload store
+  // re-validates on set, so the file only ever holds bounded plain entries.
+  ipcMain.handle('autoextract:recordVerify', function (_event, rawUrl, rawResult) {
+    var canonical = verifyDisplay.canonicalResult(rawResult);
+    var entry = canonical && typeof rawUrl === 'string' && rawUrl
+      ? verifyDisplay.canonicalEntry({ code: canonical.code, checkedAt: Date.now() })
+      : null;
+    if (!entry || !payloadStore) {
+      return { ok: false };
+    }
+    var map = {};
+    Object.keys(payloadStore.verify || {}).forEach(function (key) {
+      map[key] = payloadStore.verify[key];
+    });
+    map[rawUrl.slice(0, 2048)] = entry;
+    payloadStore.setVerifyMap(map);
+    return { ok: true };
+  });
+
+  // Renderer asks for the persisted verify map (seeded before the backlog
+  // drains, so restored rows show their last-verified badges immediately).
+  // Returns a plain copy; the renderer cannot mutate the store.
+  ipcMain.handle('autoextract:getVerifyHistory', function () {
+    var out = {};
+    Object.keys(payloadStore && payloadStore.verify || {}).forEach(function (key) {
+      out[key] = {
+        code: payloadStore.verify[key].code,
+        checkedAt: payloadStore.verify[key].checkedAt
+      };
+    });
+    return out;
   });
 
   // Footer "reveal history file" action. Deliberately takes NO argument:

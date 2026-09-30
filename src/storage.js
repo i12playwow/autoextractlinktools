@@ -131,6 +131,53 @@ function useKeyfileAdapter(options) {
 }
 
 // ---------------------------------------------------------------------------
+// Verify-map sanitization
+// ---------------------------------------------------------------------------
+
+// Upper bound for the persisted verify map (newest kept), matching the
+// renderer-side default in src/renderer/verify.js.
+var VERIFY_MAX_ENTRIES = 500;
+
+// Validates a verify map of URL -> {code, checkedAt} into a bounded plain
+// object. Main canonicalizes entries before storing them (through the shared
+// pure module), so this is a defensive re-check on load and on setVerifyMap:
+// only string keys (<= 2048 chars) with finite positive timestamps survive,
+// values keep only the known fields, and the newest entries win when the map
+// exceeds the bound. Never throws.
+function sanitizeVerifyMap(raw) {
+  var out = {};
+  if (!raw || typeof raw !== 'object') {
+    return out;
+  }
+  var keys = [];
+  Object.keys(raw).forEach(function (key) {
+    var entry = raw[key];
+    if (typeof key !== 'string' || key.length === 0 || key.length > 2048 ||
+        !entry || typeof entry !== 'object') {
+      return;
+    }
+    var checkedAt = typeof entry.checkedAt === 'number' && isFinite(entry.checkedAt) && entry.checkedAt > 0
+      ? Math.floor(entry.checkedAt)
+      : null;
+    if (checkedAt === null) {
+      return;
+    }
+    out[key] = {
+      code: entry.code === 2 || entry.code === 3 ? entry.code : null,
+      checkedAt: checkedAt
+    };
+    keys.push(key);
+  });
+  if (keys.length > VERIFY_MAX_ENTRIES) {
+    keys.sort(function (a, b) { return out[a].checkedAt - out[b].checkedAt; });
+    while (keys.length > VERIFY_MAX_ENTRIES) {
+      delete out[keys.shift()];
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
@@ -154,6 +201,11 @@ function PayloadStore(options) {
   this.cryptoAdapter = options.cryptoAdapter || useKeyfileAdapter({ filePath: this.filePath });
 
   this.payloads = [];
+  // Link-verification results (URL -> {code, checkedAt}), persisted inside
+  // the same encrypted document. Alive-only by construction: main canonicalizes
+  // every entry through verify.canonicalEntry before it lands here, and the
+  // map is bounded so long-lived installs cannot grow the file without limit.
+  this.verify = {};
   this.dirty = false;
   this.flushTimer = null;
 
@@ -208,8 +260,13 @@ PayloadStore.prototype.load = function () {
           self.payloads = inner.payloads.filter(function (p) {
             return p && typeof p === 'object';
           });
+          // Verify map: optional and validated; entries were canonicalized
+          // before being stored, but re-validate on load anyway so a
+          // hand-edited (still authenticated) document cannot inject junk.
+          self.verify = sanitizeVerifyMap(inner.verify);
         } else {
           self.payloads = [];
+          self.verify = {};
         }
         resolve(self.payloads);
         return;
@@ -224,6 +281,7 @@ PayloadStore.prototype.load = function () {
         self.payloads = parsed.payloads.filter(function (p) {
           return p && typeof p === 'object';
         });
+        self.verify = {};
         self.dirty = true;
         self.scheduleFlush();
         resolve(self.payloads);
@@ -231,6 +289,7 @@ PayloadStore.prototype.load = function () {
       }
 
       self.payloads = [];
+      self.verify = {};
       resolve(self.payloads);
     });
   });
@@ -253,6 +312,15 @@ PayloadStore.prototype.appendPayload = function (record) {
 
 PayloadStore.prototype.clear = function () {
   this.payloads = [];
+  this.verify = {};
+  this.dirty = true;
+  this.scheduleFlush();
+};
+
+// Replaces the in-memory verify map (used by main after canonicalizing the
+// renderer's reports) and schedules a flush.
+PayloadStore.prototype.setVerifyMap = function (map) {
+  this.verify = sanitizeVerifyMap(map);
   this.dirty = true;
   this.scheduleFlush();
 };
@@ -305,7 +373,7 @@ PayloadStore.prototype.flushNow = function () {
     }
 
     var savedAt = new Date().toISOString();
-    var inner = JSON.stringify({ savedAt: savedAt, payloads: this.payloads });
+    var inner = JSON.stringify({ savedAt: savedAt, payloads: this.payloads, verify: this.verify });
     var encrypted = this.cryptoAdapter.encrypt(inner);
 
     var body = JSON.stringify({

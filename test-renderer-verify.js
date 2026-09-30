@@ -21,6 +21,9 @@
 //   - isStale: fresh entries, stale entries, non-alive states, clock skew
 //   - failureMessage: timeout/unreachable/unsafe-url/HTTP-code/error-string
 //     mapping and the generic fallback
+//   - canonicalEntry / canonicalMap: persistence sanitization (plain values
+//     only, timestamp clamping, key bounds, newest-kept bounding, Map and
+//     plain-object inputs)
 //
 // No ports, no browser, no Electron, no DOM.
 
@@ -148,7 +151,44 @@ const TESTS = [
     assertEqual(verify.failureMessage({ ok: false, error: 'redirect loop' }), 'redirect loop', 'error string');
     assertEqual(verify.failureMessage({ ok: false }), 'Check failed', 'bare failure');
     assertEqual(verify.failureMessage(null), 'Check failed', 'null');
-  }]
+  }],
+
+  ['canonicalEntry: keeps conforming entries, clamps code, drops the rest', () => {
+    assertDeepEqual(verify.canonicalEntry({ code: 200, checkedAt: 1234.7, extra: 'x' }),
+      { code: null, checkedAt: 1234 }, 'code clamped to null, timestamp floored, extras dropped');
+    assertDeepEqual(verify.canonicalEntry({ code: 3, checkedAt: 99 }),
+      { code: 3, checkedAt: 99 }, 'status class 3 kept');
+    assertEqual(verify.canonicalEntry({ checkedAt: 0 }), null, 'zero timestamp rejected');
+    assertEqual(verify.canonicalEntry({ checkedAt: -5 }), null, 'negative timestamp rejected');
+    assertEqual(verify.canonicalEntry({ checkedAt: 'x' }), null, 'non-numeric timestamp rejected');
+    assertEqual(verify.canonicalEntry({ checkedAt: Infinity }), null, 'infinite timestamp rejected');
+    assertEqual(verify.canonicalEntry(null), null, 'null rejected');
+    assertEqual(verify.canonicalEntry('x'), null, 'string rejected');
+  }],
+
+  ['canonicalMap: sanitizes Maps and plain objects, bounded newest-kept', () => {
+    const m = new Map();
+    m.set('http://a/1', { code: 2, checkedAt: 300 });
+    m.set('http://a/2', { code: 3, checkedAt: 100 });
+    m.set('http://a/3', { checkedAt: 200 });
+    m.set(42, { code: 2, checkedAt: 400 });
+    m.set('http://a/bad', { checkedAt: 'nope' });
+    m.set('x'.repeat(3000), { code: 2, checkedAt: 500 });
+    const out = verify.canonicalMap(m, 10);
+    assertDeepEqual(Object.keys(out).sort(), ['http://a/1', 'http://a/2', 'http://a/3'], 'only valid string keys survive');
+    assertDeepEqual(out['http://a/1'], { code: 2, checkedAt: 300 }, 'entry values canonicalized');
+    assertDeepEqual(out['http://a/3'], { code: null, checkedAt: 200 }, 'missing code clamps to null');
+
+    const bounded = verify.canonicalMap({
+      'http://old/1': { code: 2, checkedAt: 1 },
+      'http://old/2': { code: 2, checkedAt: 2 },
+      'http://old/3': { code: 2, checkedAt: 3 }
+    }, 2);
+    assertDeepEqual(Object.keys(bounded), ['http://old/2', 'http://old/3'], 'oldest dropped, survivors in ascending checkedAt order');
+
+    assertDeepEqual(verify.canonicalMap(null), {}, 'null map -> empty');
+    assertDeepEqual(verify.canonicalMap({ a: null, b: 'x' }), {}, 'non-conforming values -> empty');
+  }],
 ];
 
 function assertDeepEqual(actual, expected, message) {

@@ -14,6 +14,9 @@
 //   - bursts coalesce into a single flush
 //   - bounding: only the newest maxPayloads entries are kept
 //   - clear: empties memory and the file on the next flush
+//   - verify map: URL -> {code, checkedAt} persisted inside the encrypted
+//     document (setVerifyMap), re-validated on load, wiped by clear, empty
+//     for legacy v1 files; URLs never appear as plaintext in the envelope
 //   - injectable path: a custom filePath is honored
 //   - flush failure: never throws, store stays dirty
 //
@@ -381,6 +384,102 @@ const TESTS = [
     assert(!threw, 'flushNow must not throw on write failure');
     assert(store.dirty === true, 'store stays dirty after failed flush');
     store.dispose();
+  }],
+
+  // ---- verify map persistence (URL -> {code, checkedAt}, alive-only) ----
+  ['verify map: setVerifyMap persists inside the encrypted document and reloads', () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'autoextract-history.json');
+    const store = new PayloadStore({ filePath: filePath, flushDebounceMs: 0 });
+    store.appendPayload(makeRecord(1));
+    store.setVerifyMap({
+      'http://example.com/video-1.mp4': { code: 2, checkedAt: 1000 },
+      'http://example.com/other.mp4': { code: 3, checkedAt: 2000 }
+    });
+    store.flushNow();
+    store.dispose();
+
+    // The on-disk envelope must not leak verify URLs as plaintext.
+    const rawOnDisk = fs.readFileSync(filePath, 'utf8');
+    assert(rawOnDisk.indexOf('example.com') === -1, 'verify URLs are not plaintext in the envelope');
+
+    return loadViaStore(filePath).then((payloads) => {
+      expect(payloads.length, 1, 'payloads still restored alongside verify map');
+      const loader = new PayloadStore({ filePath: filePath });
+      return loader.load().then(() => {
+        const restored = loader.verify;
+        assert(restored && restored['http://example.com/video-1.mp4'], 'verify entry restored');
+        expect(restored['http://example.com/video-1.mp4'].code, 2, 'code restored');
+        expect(restored['http://example.com/video-1.mp4'].checkedAt, 1000, 'checkedAt restored');
+        loader.dispose();
+      });
+    });
+  }],
+
+  ['verify map: sanitize on load drops junk entries and bounds the map', () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'autoextract-history.json');
+    const store = new PayloadStore({ filePath: filePath, flushDebounceMs: 0 });
+    // Hand the store a deliberately dirty map through setVerifyMap (which
+    // sanitizes) — then also prove load-side re-validation by writing a map
+    // with junk through the raw property before a manual flush.
+    store.setVerifyMap({
+      'http://good/1': { code: 2, checkedAt: 100 },
+      'http://good/2': { code: 2, checkedAt: 200 }
+    });
+    store.verify = {
+      'http://good/1': { code: 2, checkedAt: 100 },
+      'http://junk/1': { checkedAt: 'nope' },
+      'http://junk/2': 'not-an-object',
+      42: { code: 2, checkedAt: 300 }
+    };
+    store.dirty = true;
+    store.flushNow();
+    store.dispose();
+
+    const loader = new PayloadStore({ filePath: filePath });
+    return loader.load().then(() => {
+      // Object.keys coerces the numeric key 42 to the string "42", which is
+      // a valid (if meaningless) string key; both junk entries are dropped.
+      const keys = Object.keys(loader.verify).sort();
+      expect(keys.length, 2, 'only entries with valid shapes survive');
+      assert(keys.indexOf('http://good/1') !== -1, 'valid key kept');
+      assert(keys.indexOf('42') !== -1, 'numeric key arrives coerced to a string');
+      assert(keys.indexOf('http://junk/1') === -1, 'junk entry with bad timestamp dropped');
+      assert(keys.indexOf('http://junk/2') === -1, 'non-object entry dropped');
+      loader.dispose();
+    });
+  }],
+
+  ['verify map: clear() wipes it with the payloads', () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'autoextract-history.json');
+    const store = new PayloadStore({ filePath: filePath, flushDebounceMs: 0 });
+    store.appendPayload(makeRecord(1));
+    store.setVerifyMap({ 'http://example.com/video-1.mp4': { code: 2, checkedAt: 1000 } });
+    store.flushNow();
+    store.clear();
+    store.flushNow();
+    store.dispose();
+
+    const loader = new PayloadStore({ filePath: filePath });
+    return loader.load().then((payloads) => {
+      expect(payloads.length, 0, 'payloads gone after clear');
+      expect(Object.keys(loader.verify).length, 0, 'verify map gone after clear');
+      loader.dispose();
+    });
+  }],
+
+  ['verify map: legacy v1 upgrade starts with an empty map', () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'autoextract-history.json');
+    fs.writeFileSync(filePath, JSON.stringify({ version: 1, payloads: [makeRecord(1)] }), 'utf8');
+    const store = new PayloadStore({ filePath: filePath });
+    return store.load().then((payloads) => {
+      expect(payloads.length, 1, 'v1 payloads restored');
+      expect(Object.keys(store.verify).length, 0, 'v1 file has no verify map');
+      store.dispose();
+    });
   }]
 ];
 

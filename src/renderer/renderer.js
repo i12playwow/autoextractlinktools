@@ -41,6 +41,11 @@
 //     payload and Clear. Clicking the history path asks main (over the
 //     argument-less revealHistoryFolder channel) to open the file's folder
 //     with the file selected.
+//   - Verify results persist: every successful probe is reported over
+//     autoextract:recordVerify (alive-only; main canonicalizes before it
+//     reaches the encrypted history file), and the stored map is pulled over
+//     autoextract:getVerifyHistory before the backlog drains, so restored
+//     rows show their last-verified badges immediately after a restart.
 
 'use strict';
 
@@ -304,6 +309,22 @@ function clearAutoVerifyTimers() {
 // Shared probe core for the manual button and the background pass: runs the
 // request only when neither the recheck lock nor an in-flight probe of the
 // same URL rejects it, and lets the caller decide how to paint the answer.
+// Reports a stored success to main so it survives restarts. Fire-and-forget:
+// persistence is best-effort and failures are silent (the badge already
+// shows the state for this session). Guarded for preload variants without
+// the channel.
+function persistVerify(url) {
+  if (!window.autoextract || typeof window.autoextract.recordVerify !== 'function') {
+    return;
+  }
+  const status = verifyApi.statusOf(verifyState, url);
+  window.autoextract.recordVerify(url, {
+    ok: true,
+    status: status.code === 3 ? 3 : 2,
+    code: status.code
+  }).catch(function () {});
+}
+
 function requestVerify(url, at) {
   if (!window.autoextract || typeof window.autoextract.verifyUrl !== 'function' || !verifyApi) {
     return Promise.resolve(false);
@@ -349,6 +370,7 @@ function scheduleAutoVerify(record) {
           // Silent pass: failures, skips, and declines change nothing here.
           return;
         }
+        persistVerify(url);
         const status = verifyApi.statusOf(verifyState, url);
         listEl.querySelectorAll('.link-row').forEach(function (row) {
           const urlSpan = row.querySelector('.link-url');
@@ -377,6 +399,7 @@ function runVerify(row, url, button) {
       row.classList.remove('verify-dead');
       const status = verifyApi.statusOf(verifyState, url);
       showVerifiedBadge(row, new Date(status.checkedAt || at).toISOString());
+      persistVerify(url);
     } else if (outcome === null) {
       showDeadBadge(row, 'Check failed');
     } else if (outcome) {
@@ -713,7 +736,31 @@ function init() {
 
   let unsubscribe = null;
 
-  window.autoextract.getBacklog()
+  // Seed the verify state from the encrypted history before the backlog
+  // drains, so restored rows render their alive badges on the first pass.
+  // If the preload predates the channel, the window simply starts with no
+  // stored verification (same as today).
+  const seedPromise = (typeof window.autoextract.getVerifyHistory === 'function'
+    ? window.autoextract.getVerifyHistory()
+    : Promise.resolve(null)
+  ).then(function (stored) {
+    if (stored && typeof stored === 'object') {
+      Object.keys(stored).forEach(function (url) {
+        const entry = stored[url];
+        if (entry && typeof entry.checkedAt === 'number') {
+          verifyState.set(url, {
+            state: 'alive',
+            code: entry.code === 2 || entry.code === 3 ? entry.code : null,
+            checkedAt: entry.checkedAt
+          });
+        }
+      });
+    }
+  }).catch(function () {});
+
+  seedPromise.then(function () {
+    return window.autoextract.getBacklog();
+  })
     .then(function (backlog) {
       (backlog || []).forEach(function (record) {
         acceptPayload(record, false);
@@ -743,6 +790,9 @@ function init() {
       seenPayloads.clear();
       verifyState.clear();
       clearAutoVerifyTimers();
+      // The persisted verify map is wiped by the same clearBacklog call
+      // above: main's clear handler empties the payload store, verify map
+      // included.
       refreshChipCounts();
       updateStatusBar();
       updateEmptyState();

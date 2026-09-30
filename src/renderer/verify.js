@@ -17,7 +17,10 @@
 //   - Only success answers are stored. main never returns a bare "dead":
 //     HTTP >= 400 and transport failures are {ok:false} results the renderer
 //     surfaces as a transient badge title/message instead of a sticky mark,
-//     so a transient network blip cannot permanently brand a row dead.
+//     so a transient network blip cannot permanently brand a row dead. The
+//     same alive-only rule governs persistence: the main process canonicalizes
+//     the renderer's success reports through canonicalEntry/canonicalMap
+//     before they reach the encrypted history file.
 //   - applyResult enforces a recheck lock: a second success for the same URL
 //     inside MIN_MS_BETWEEN_CHECKS is treated as a duplicate answer for the
 //     same check and rejected, so overlapping answers cannot flicker the
@@ -28,6 +31,11 @@
 
   // Same-URL checks closer together than this are treated as one check.
   var MIN_MS_BETWEEN_CHECKS = 60 * 1000;
+
+  // Upper bound for the persisted verify map (newest kept). Entries are tiny
+  // ({code, checkedAt}); this bounds the history file even for long-lived
+  // installs with rotating URLs.
+  var VERIFY_MAX_ENTRIES = 500;
 
   // {ok:true, status:2xx|3xx} -> {state:'alive', code, note}; anything else
   // is not a storable success and yields null.
@@ -130,9 +138,61 @@
     return 'Check failed';
   }
 
+  // Sanitizes one URL -> {code, checkedAt} entry for persistence. Main uses
+  // this to canonicalize the renderer's report before anything reaches the
+  // encrypted history file: only plain-string keys and finite timestamps
+  // survive, values are clamped to the known-good shapes, and the result is
+  // a plain JSON-safe object (no prototypes, no extra fields). Non-conforming
+  // input yields null, and an all-null map means "nothing to store".
+  function canonicalEntry(entry) {
+    if (!entry || typeof entry !== 'object') {
+      return null;
+    }
+    var checkedAt = typeof entry.checkedAt === 'number' && isFinite(entry.checkedAt) && entry.checkedAt > 0
+      ? Math.floor(entry.checkedAt)
+      : null;
+    var code = entry.code === 2 || entry.code === 3 ? entry.code : null;
+    if (checkedAt === null) {
+      return null;
+    }
+    return { code: code, checkedAt: checkedAt };
+  }
+
+  // Canonicalizes a whole map (any object or Map shape) into a sorted,
+  // plain-object subset suitable for the history file, bounded to `limit`
+  // entries (newest checkedAt wins). Returns {} when nothing conforms.
+  function canonicalMap(map, limit) {
+    var max = typeof limit === 'number' && limit > 0 ? Math.floor(limit) : VERIFY_MAX_ENTRIES;
+    var out = {};
+    var keys = [];
+    function push(key, value) {
+      if (typeof key !== 'string' || key.length === 0 || key.length > 2048) {
+        return;
+      }
+      var entry = canonicalEntry(value);
+      if (entry) {
+        out[key] = entry;
+        keys.push(key);
+      }
+    }
+    if (map && typeof map.forEach === 'function') {
+      map.forEach(function (value, key) { push(key, value); });
+    } else if (map && typeof map === 'object') {
+      Object.keys(map).forEach(function (key) { push(key, map[key]); });
+    }
+    keys.sort(function (a, b) { return out[a].checkedAt - out[b].checkedAt; });
+    while (keys.length > max) {
+      delete out[keys.shift()];
+    }
+    return out;
+  }
+
   var api = {
     MIN_MS_BETWEEN_CHECKS: MIN_MS_BETWEEN_CHECKS,
+    VERIFY_MAX_ENTRIES: VERIFY_MAX_ENTRIES,
     canonicalResult: canonicalResult,
+    canonicalEntry: canonicalEntry,
+    canonicalMap: canonicalMap,
     applyResult: applyResult,
     statusOf: statusOf,
     statusLabel: statusLabel,
