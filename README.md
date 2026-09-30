@@ -78,4 +78,7 @@ verify, and the bridge edge-case suite's in-process sections (its real-Electron
 section skips by itself) — for fast signal that needs nothing beyond Node.
 Locally, `node scripts/ci-test-summary.js` runs the same everything and prints
 the same table without needing CI (`--light` matches the Light job;
-`npm run test:light` does the same).
+`npm run test:light` does the same), and `npm run test:mirror` checks that
+the suite lists have not drifted apart — the same mirror check the Light job
+runs, so a suite added to one place but not the others fails CI instead of
+silently not running anywhere.

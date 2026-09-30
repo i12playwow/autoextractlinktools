@@ -37,6 +37,9 @@ jobs:
       - name: Install dependencies (skip Electron postinstall)
         run: npm ci --ignore-scripts
 
+      - name: Check the suite lists have not drifted apart
+        run: node scripts/ci-test-summary.js --check-mirror
+
       - name: Run pure-Node suites and write per-suite summary
         run: node scripts/ci-test-summary.js --light
 

@@ -17,6 +17,11 @@
 //     --ignore-scripts`, gives every push fast automated signal, and keeps
 //     working when Electron/browser-dependent layers cannot (runner image
 //     changes, browser availability, billing-limited slow lanes).
+//   node scripts/ci-test-summary.js --check-mirror  verify the suite lists
+//     have not drifted apart: every counted suite must appear in `npm test`
+//     in the same order, every suite script must exist, and the workflow
+//     must run both modes. Exits non-zero on any drift; runs as a step in
+//     the Light job so drift breaks CI instead of silently skipping suites.
 //
 // Exit code: 0 only if every suite passed (or skipped). Skipped suites
 // (e.g. no browser installed) count as neutral and are labeled SKIP.
@@ -35,7 +40,7 @@
 // Each child's live output streams through to stdout so CI logs stay
 // readable; the Results line is matched out of the same stream.
 //
-// Run: node scripts/ci-test-summary.js [--light]
+// Run: node scripts/ci-test-summary.js [--light] [--check-mirror]
 //
 
 'use strict';
@@ -76,6 +81,63 @@ const LIGHT_SUITES = [
 ];
 
 const SUITES = LIGHT_MODE ? LIGHT_SUITES : FULL_SUITES;
+
+// --check-mirror: verify this runner still mirrors the two other places that
+// name suites — the `npm test` chain in package.json and the workflow's
+// invocations of this script — so the lists cannot drift apart silently when
+// a suite is added or renamed. Pure file reading; no suites are executed.
+function checkMirror() {
+  const problems = [];
+
+  // 1. Every full-mode suite script exists on disk.
+  FULL_SUITES.forEach((suite) => {
+    if (!fs.existsSync(path.join(APP_ROOT, suite.script))) {
+      problems.push('missing suite script: ' + suite.script);
+    }
+  });
+
+  // 2. `npm test` names exactly the counted full-mode suites, in the same
+  //    order. (The smoke and E2E harnesses are CI-only by design and are
+  //    not part of the npm chain.)
+  const pkg = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8'));
+  const chain = [];
+  String(pkg.scripts && pkg.scripts.test || '').split('&&').forEach((cmd) => {
+    const m = cmd.match(/node\s+([\w./-]+\.js)/);
+    if (m) {
+      chain.push(m[1]);
+    }
+  });
+  const counted = FULL_SUITES.filter((s) => s.countsResults).map((s) => s.script);
+  if (JSON.stringify(chain) !== JSON.stringify(counted)) {
+    problems.push('npm test chain ' + JSON.stringify(chain) +
+      ' does not mirror the runner suite list ' + JSON.stringify(counted));
+  }
+
+  // 3. The workflow runs both modes: the Light job installs without the
+  //    Electron postinstall and invokes --light; the full list runs on both
+  //    matrix OSes.
+  const workflow = fs.readFileSync(path.join(APP_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+  if (workflow.indexOf('npm ci --ignore-scripts') === -1) {
+    problems.push('workflow light job does not install with --ignore-scripts');
+  }
+  if (!/ci-test-summary\.js\s+--light/.test(workflow)) {
+    problems.push('workflow does not run the light suite list (--light)');
+  }
+  const fullUses = (workflow.match(/node scripts\/ci-test-summary\.js(?!\s+--light)/g) || []).length;
+  if (fullUses < 2) {
+    problems.push('workflow runs the full suite list ' + fullUses +
+      ' time(s), expected at least 2 (Linux + Windows)');
+  }
+
+  if (problems.length > 0) {
+    console.log('AutoExtract CI mirror check FAILED:');
+    problems.forEach((p) => console.log('  - ' + p));
+    process.exit(1);
+  }
+  console.log('AutoExtract CI mirror check OK: ' + counted.length +
+    ' counted suites mirror `npm test` in order, every suite script exists,' +
+    ' and the workflow runs both the light and full lists.');
+}
 
 const RESULTS_RE = /Results:\s*(\d+)\s+passed(?:,\s*(\d+)\s+failed)?/;
 
@@ -211,6 +273,11 @@ function buildSummaryTable(results) {
 }
 
 async function main() {
+  if (process.argv.includes('--check-mirror')) {
+    checkMirror();
+    return;
+  }
+
   console.log('AutoExtract CI: running ' + SUITES.length + ' suites' +
     (LIGHT_MODE ? ' (light mode: pure Node, no Electron/browser flows)' : '') + '\n');
 
