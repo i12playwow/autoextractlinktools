@@ -137,6 +137,11 @@ Current scaffold state:
   under Node by `test-renderer-verify.js`; the probe itself is unit-tested
   with scripted fetches plus one real loopback-server round trip in the
   bridge edge-case suite.
+- Footer status bar: a monospace strip along the bottom of the window shows
+  the bridge endpoint (`host:port`), the history file path (both supplied by
+  the main process over `autoextract:getAppInfo`, read-only strings), and
+  the current payload count, which the renderer tracks from its own records
+  and updates on every payload and on Clear.
 - Filtering in the window: a search box matches link URLs and page titles/URLs
   case-insensitively, and type chips (video/audio/hls/dash/other, with live
   per-type counts) narrow which link rows are shown. The matching rules are

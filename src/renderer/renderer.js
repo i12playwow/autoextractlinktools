@@ -30,6 +30,10 @@
 //     pure display rules live in verify.js (window.AutoExtractVerify,
 //     unit-tested by test-renderer-verify.js). Only successes are stored, so
 //     a transient failure can never permanently brand a row dead.
+//   - A footer status bar shows the bridge endpoint, the history file path,
+//     and the payload count; main reports both paths over
+//     autoextract:getAppInfo once, and the count updates on every payload
+//     and Clear.
 
 'use strict';
 
@@ -46,6 +50,12 @@ const filterStatusEl = document.getElementById('filter-status');
 const filterApi = window.AutoExtractFilter || null;
 const verifyApi = window.AutoExtractVerify || null;
 
+// Footer status bar elements; all optional so a stale HTML variant cannot
+// crash the renderer.
+const sbBridgeEl = document.getElementById('sb-bridge');
+const sbHistoryEl = document.getElementById('sb-history');
+const sbCountEl = document.getElementById('sb-count');
+
 // Every payload accepted so far, oldest first. This is the single source of
 // truth for re-renders; the DOM is a projection of records + filterState.
 const records = [];
@@ -59,6 +69,26 @@ let filterState = { query: '', types: null };
 const selectedTypes = [];
 
 const seenPayloads = new Set();
+
+// { bridgeHost, historyFile } from main once at startup; null when the
+// preload API is missing.
+let appInfo = null;
+
+// Footer status bar: bridge endpoint + history path arrive once from main
+// (nulls under plain Node / missing preload); the payload count tracks the
+// records source of truth.
+function updateStatusBar() {
+  if (appInfo && sbBridgeEl) {
+    sbBridgeEl.textContent = 'bridge ' + appInfo.bridgeHost;
+  }
+  if (appInfo && sbHistoryEl) {
+    sbHistoryEl.textContent = appInfo.historyFile;
+  }
+  if (sbCountEl) {
+    sbCountEl.textContent = records.length +
+      (records.length === 1 ? ' payload' : ' payloads');
+  }
+}
 
 function updateEmptyState() {
   const hasItems = listEl.children.length > 0;
@@ -448,14 +478,15 @@ function acceptPayload(record, isLive) {
 
   if (!filterApi || filterApi.matchRecord(record, filterState).passes) {
     renderPayload(record);
-    updateEmptyState();
-    updateFilterStatus();
   } else {
     // Hidden by the active filter: totals still grow, and the no-match panel
     // may need to appear (or disappear) even though the list did not change.
-    updateEmptyState();
-    updateFilterStatus();
   }
+  updateEmptyState();
+  updateFilterStatus();
+  // Counted even when the card is hidden by the filter: the footer reports
+  // the backlog size, not the visible subset.
+  updateStatusBar();
 
   if (isLive) {
     // Consumed by run-desktop-bridge.js to verify the live IPC push path.
@@ -548,11 +579,19 @@ function initFilterBar() {
 
 function init() {
   setStatus();
+  updateStatusBar();
 
   if (!window.autoextract) {
     if (clearBtn) { clearBtn.disabled = true; }
     updateEmptyState();
     return;
+  }
+
+  if (typeof window.autoextract.getAppInfo === 'function') {
+    window.autoextract.getAppInfo().then(function (info) {
+      appInfo = info || null;
+      updateStatusBar();
+    }).catch(function () {});
   }
 
   initFilterBar();
@@ -573,6 +612,7 @@ function init() {
       // Consumed by run-desktop-bridge.js to verify the pull path.
       console.log('AutoExtract renderer: ready with ' + (backlog || []).length + ' backlogged payload(s)');
       updateEmptyState();
+      updateStatusBar();
       updateFilterStatus();
     })
     .catch(function (error) {
@@ -588,6 +628,7 @@ function init() {
       seenPayloads.clear();
       verifyState.clear();
       refreshChipCounts();
+      updateStatusBar();
       updateEmptyState();
       updateFilterStatus();
     });
