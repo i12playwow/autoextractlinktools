@@ -109,7 +109,11 @@ function startElectron(dataDir) {
       cwd: APP_ROOT,
       env: Object.assign({}, process.env, {
         AUTOEXTRACT_BRIDGE_PORT: String(PORT),
-        AUTOEXTRACT_DATA_DIR: dataDir || ''
+        AUTOEXTRACT_DATA_DIR: dataDir || '',
+        // CI runners cannot chown the SUID chrome-sandbox helper, and
+        // Chromium aborts with SIGTRAP without this opt-out. Windows (where
+        // the sandbox works differently) ignores it.
+        ELECTRON_DISABLE_SANDBOX: '1'
       }),
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -230,6 +234,51 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Waits until the history file exists and parses as a stable v2 envelope:
+// flushes are atomic renames, so two identical reads 200ms apart imply the
+// debounced write landed and nothing is mid-write. Replaces the previous
+// blind sleep, which raced the flush on slow CI machines; the envelope's
+// ciphertext hides the payload count, so phase 2's renderer-count assertion
+// remains the content check.
+function waitForPersistedHistory(filePath) {
+  const fsMod = require('fs');
+  return new Promise((resolve, reject) => {
+    let waited = 0;
+    let lastState = 'missing';
+    const interval = 200;
+    const maxWait = 10000;
+    function readEnvelope() {
+      try {
+        const parsed = JSON.parse(fsMod.readFileSync(filePath, 'utf8'));
+        if (parsed && parsed.version === 2 && typeof parsed.ciphertext === 'string' &&
+            parsed.ciphertext.length > 0) {
+          return parsed;
+        }
+        lastState = 'unrecognized shape (version ' + (parsed && parsed.version) + ')';
+      } catch (error) {
+        lastState = 'unreadable: ' + error.message;
+      }
+      return null;
+    }
+    (function check() {
+      const envelope = readEnvelope();
+      if (envelope) {
+        const again = readEnvelope();
+        if (again && JSON.stringify(again) === JSON.stringify(envelope)) {
+          resolve(envelope.savedAt || '');
+          return;
+        }
+      }
+      if (waited >= maxWait) {
+        reject(new Error('history file never reached a stable v2 envelope (last state: ' + lastState + ')'));
+        return;
+      }
+      waited += interval;
+      setTimeout(check, interval);
+    })();
+  });
+}
+
 // Resolves when the renderer reports at least `minCount` backlogged payloads.
 // A minimum (not exact) because the smoke's own bridge-readiness probe can
 // land before or after the window attaches depending on timing.
@@ -245,7 +294,13 @@ function waitForRendererReadyWithCount(minCount) {
         return;
       }
       if (waited >= maxWait) {
-        reject(new Error('renderer never reported >= ' + minCount + ' backlogged payload(s)'));
+        const restoredMatch = smokeStdout.match(/AutoExtract desktop restored (\d+) persisted payload/);
+        const restoreInfo = restoredMatch
+          ? 'main restored ' + restoredMatch[1]
+          : 'no restore line in main output';
+        const decryptWarn = (smokeStdout.match(/history file failed to decrypt \([^)]*\)/) || [null])[0];
+        reject(new Error('renderer never reported >= ' + minCount + ' backlogged payload(s) (' +
+          restoreInfo + (decryptWarn ? '; ' + decryptWarn : '') + ')'));
         return;
       }
       waited += interval;
@@ -321,17 +376,11 @@ async function run() {
 
     // The store flushes on a 500ms debounce, and dispose() hard-kills the app
     // (SIGTERM = TerminateProcess on Windows, so will-quit never runs). Wait
-    // out the debounce so the history file is guaranteed to be on disk before
-    // the kill.
-    await sleep(900);
+    // for a stable on-disk envelope instead of sleeping blindly.
+    await waitForPersistedHistory(path.join(smokeDataDir, 'autoextract-history.json'));
 
     await stopAndWait(runner);
     runner = null;
-
-    const historyFile = path.join(smokeDataDir, 'autoextract-history.json');
-    if (!fs.existsSync(historyFile)) {
-      throw new Error('history file was not written during the first run');
-    }
 
     // ---- Phase 2: restart with the same data dir ----
     console.log('Phase 2: restarting the app with the same data dir.');

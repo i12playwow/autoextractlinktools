@@ -243,7 +243,12 @@ PayloadStore.prototype.load = function () {
         try {
           plaintext = self.cryptoAdapter.decrypt({ data: parsed.ciphertext, nonce: parsed.nonce });
         } catch (decryptError) {
-          // Wrong key or tampered file: same policy as corruption.
+          // Wrong key or tampered file: same policy as corruption. Logged so
+          // a real install (or a CI run) can tell a key mismatch apart from
+          // an empty or corrupt file.
+          console.warn('AutoExtract storage: history file failed to decrypt (' +
+            (decryptError && decryptError.message ? decryptError.message : String(decryptError)) +
+            '); starting fresh.');
           self.payloads = [];
           resolve(self.payloads);
           return;

@@ -557,7 +557,12 @@ function electronAvailable() {
 function startElectron() {
   const electron = spawn(process.execPath, [ELECTRON_CLI, MAIN_PATH], {
     cwd: APP_ROOT,
-    env: Object.assign({}, process.env, { AUTOEXTRACT_BRIDGE_PORT: String(E2E_PORT) }),
+    env: Object.assign({}, process.env, {
+      AUTOEXTRACT_BRIDGE_PORT: String(E2E_PORT),
+      // CI runners cannot chown the SUID chrome-sandbox helper, and Chromium
+      // aborts with SIGTRAP without this opt-out. Windows ignores it.
+      ELECTRON_DISABLE_SANDBOX: '1'
+    }),
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
