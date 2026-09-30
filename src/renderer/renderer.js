@@ -29,7 +29,11 @@
 //     the URL (HEAD with a GET fallback) over autoextract:verifyUrl; the
 //     pure display rules live in verify.js (window.AutoExtractVerify,
 //     unit-tested by test-renderer-verify.js). Only successes are stored, so
-//     a transient failure can never permanently brand a row dead.
+//     a transient failure can never permanently brand a row dead. Newly
+//     received links are also verified in the background a few seconds after
+//     they arrive (scheduleAutoVerify); background results are silent — a
+//     success paints the alive badge, a failure changes nothing, so only
+//     the explicit check button can ever mark a row dead.
 //   - A footer status bar shows the bridge endpoint, the history file path,
 //     and a payload count with a live per-type link breakdown (e.g.
 //     "2 payloads · 12 video · 3 hls", zero types omitted); main reports the
@@ -276,6 +280,89 @@ function attachVerifyStatus(row, url) {
 
 // Probes one row's URL over the preload channel. The button is disabled for
 // the duration; the pure module's recheck lock absorbs overlapping answers.
+// ---- Background auto-verify (newly received links) ----
+//
+// A few seconds after a live payload arrives, its links are verified in the
+// background: staggered per link, skipped for URLs already verified (or
+// being verified) recently, and silent on failure. Guarded at every level
+// so a test harness or a page without verify.js degrades to manual-only.
+
+// Delay before the first probe of a fresh payload; stagger between links.
+var AUTO_VERIFY_DELAY_MS = 4 * 1000;
+var AUTO_VERIFY_STAGGER_MS = 300;
+// One in-flight probe per URL at a time, shared with manual checks.
+var inFlightVerifies = new Set();
+var autoVerifyTimers = [];
+
+function clearAutoVerifyTimers() {
+  autoVerifyTimers.forEach(function (timer) {
+    clearTimeout(timer);
+  });
+  autoVerifyTimers.length = 0;
+}
+
+// Shared probe core for the manual button and the background pass: runs the
+// request only when neither the recheck lock nor an in-flight probe of the
+// same URL rejects it, and lets the caller decide how to paint the answer.
+function requestVerify(url, at) {
+  if (!window.autoextract || typeof window.autoextract.verifyUrl !== 'function' || !verifyApi) {
+    return Promise.resolve(false);
+  }
+  if (inFlightVerifies.has(url)) {
+    return Promise.resolve(false);
+  }
+  const status = verifyApi.statusOf(verifyState, url);
+  if (status.state === 'alive' && at - (status.checkedAt || 0) < verifyApi.MIN_MS_BETWEEN_CHECKS) {
+    return Promise.resolve(false);
+  }
+  inFlightVerifies.add(url);
+  return window.autoextract.verifyUrl(url).then(function (raw) {
+    const stored = verifyApi.applyResult(verifyState, url, raw, at);
+    // true: success stored. raw: the probe ran but the answer was not a
+    // storable success (failure shape). null: the probe ran and the invoke
+    // itself rejected. false: skipped without probing.
+    return stored ? true : (raw || null);
+  }).catch(function () {
+    return null;
+  }).then(function (outcome) {
+    inFlightVerifies.delete(url);
+    return outcome;
+  });
+}
+
+// Background pass for one fresh payload. Successes refresh the alive badge
+// on the URL's row (whichever row now shows that URL); failures stay silent.
+function scheduleAutoVerify(record) {
+  if (!verifyApi || !window.autoextract || typeof window.autoextract.verifyUrl !== 'function') {
+    return;
+  }
+  const links = record && Array.isArray(record.links) ? record.links : [];
+  links.forEach(function (link, index) {
+    if (!link || typeof link.url !== 'string' || !link.url) {
+      return;
+    }
+    const timer = setTimeout(function () {
+      const url = link.url;
+      const at = Date.now();
+      requestVerify(url, at).then(function (outcome) {
+        if (outcome !== true) {
+          // Silent pass: failures, skips, and declines change nothing here.
+          return;
+        }
+        const status = verifyApi.statusOf(verifyState, url);
+        listEl.querySelectorAll('.link-row').forEach(function (row) {
+          const urlSpan = row.querySelector('.link-url');
+          if (urlSpan && urlSpan.dataset.autoextractUrl === url) {
+            row.classList.remove('verify-dead');
+            showVerifiedBadge(row, new Date(status.checkedAt || at).toISOString());
+          }
+        });
+      });
+    }, AUTO_VERIFY_DELAY_MS + index * AUTO_VERIFY_STAGGER_MS);
+    autoVerifyTimers.push(timer);
+  });
+}
+
 function runVerify(row, url, button) {
   if (!window.autoextract || typeof window.autoextract.verifyUrl !== 'function' || !verifyApi) {
     return;
@@ -285,21 +372,20 @@ function runVerify(row, url, button) {
     button.textContent = 'checking';
   }
   const at = Date.now();
-  window.autoextract.verifyUrl(url).then(function (raw) {
-    if (verifyApi.applyResult(verifyState, url, raw, at)) {
+  requestVerify(url, at).then(function (outcome) {
+    if (outcome === true) {
       row.classList.remove('verify-dead');
-      showVerifiedBadge(row, new Date(at).toISOString());
-    } else if (raw && raw.ok === false) {
-      showDeadBadge(row, verifyApi.failureMessage(raw));
-    } else if (raw && raw.ok === true) {
-      // Success the store declined (recheck window): refresh the label only.
       const status = verifyApi.statusOf(verifyState, url);
       showVerifiedBadge(row, new Date(status.checkedAt || at).toISOString());
-    } else {
-      showDeadBadge(row, verifyApi.failureMessage(raw));
+    } else if (outcome === null) {
+      showDeadBadge(row, 'Check failed');
+    } else if (outcome) {
+      // The probe ran and the URL is not alive (HTTP >= 400, timeout,
+      // unsafe, or another failure shape).
+      showDeadBadge(row, verifyApi.failureMessage(outcome));
     }
-  }).catch(function () {
-    showDeadBadge(row, 'Check failed');
+    // outcome === false: skipped (in-flight or recently verified) — leave
+    // the row exactly as it is.
   }).then(function () {
     if (button) {
       button.disabled = false;
@@ -518,6 +604,7 @@ function acceptPayload(record, isLive) {
   if (isLive) {
     // Consumed by run-desktop-bridge.js to verify the live IPC push path.
     console.log('AutoExtract renderer: showing payload from ' + (record.pageUrl || 'unknown'));
+    scheduleAutoVerify(record);
   }
 }
 
@@ -655,6 +742,7 @@ function init() {
       records.length = 0;
       seenPayloads.clear();
       verifyState.clear();
+      clearAutoVerifyTimers();
       refreshChipCounts();
       updateStatusBar();
       updateEmptyState();
