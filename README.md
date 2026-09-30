@@ -62,15 +62,20 @@ See `ARCHITECTURE.md` for the bridge contract and design decisions.
 
 GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
 all suites — contract, detection, storage, renderer filter, renderer verify,
-bridge edge cases,
-CLI, the desktop smoke test, and the extension E2E — on every push and pull
-request, on both
+bridge edge cases, CLI, the desktop smoke test, and the extension E2E — on
+every push and pull request, on both
 Ubuntu (under `xvfb-run`, since Electron and the headless extension browser
 need a display) and Windows, and writes a per-suite results table to the
 run's summary. The Electron binary is cached; if its download fails, the
 layers that spawn the real app skip gracefully instead of failing the run.
 The extension E2E rebuilds `chrome-extension-packed/` itself and tries every
 installed Chromium-family browser, because recent branded Chrome builds
-restrict `--load-extension` (Edge and Chromium still work). Locally,
-`node scripts/ci-test-summary.js` runs the same everything and prints the
-same table without needing CI.
+restrict `--load-extension` (Edge and Chromium still work). A second,
+lightweight **Light (pure Node)** job runs on every push too: it installs
+with `npm ci --ignore-scripts` (no Electron download) and runs only the six
+pure-Node suites — contract, detection, storage, renderer filter, renderer
+verify, and the bridge edge-case suite's in-process sections (its real-Electron
+section skips by itself) — for fast signal that needs nothing beyond Node.
+Locally, `node scripts/ci-test-summary.js` runs the same everything and prints
+the same table without needing CI (`--light` matches the Light job;
+`npm run test:light` does the same).

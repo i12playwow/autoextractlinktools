@@ -13,6 +13,33 @@ permissions:
   contents: read
 
 jobs:
+  # Fast pure-Node signal for every push: no Electron binary, no display, no
+  # headless browser. Installs with --ignore-scripts (no Electron postinstall
+  # download) and runs the six pure-Node suites; the bridge edge-case suite's
+  # real-Electron section SKIPs on its own when the dist binary is absent.
+  # This keeps automated checks on every push cheap and robust even when the
+  # heavy lanes (or Actions spending itself) are unavailable.
+  light:
+    name: Light (pure Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (skip Electron postinstall)
+        run: npm ci --ignore-scripts
+
+      - name: Run pure-Node suites and write per-suite summary
+        run: node scripts/ci-test-summary.js --light
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

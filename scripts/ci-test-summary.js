@@ -9,10 +9,19 @@
 // GITHUB_STEP_SUMMARY set) it just runs everything and prints the same table
 // to stdout, so it doubles as a full-project test runner.
 //
+// Modes:
+//   node scripts/ci-test-summary.js          full run (all suites + E2Es)
+//   node scripts/ci-test-summary.js --light  light run: only the pure-Node
+//     suites — no Electron binary, no display, no headless browser. This is
+//     what the workflow's Light job runs: it needs nothing beyond `npm ci
+//     --ignore-scripts`, gives every push fast automated signal, and keeps
+//     working when Electron/browser-dependent layers cannot (runner image
+//     changes, browser availability, billing-limited slow lanes).
+//
 // Exit code: 0 only if every suite passed (or skipped). Skipped suites
 // (e.g. no browser installed) count as neutral and are labeled SKIP.
 //
-// Per-suite plan (mirrors `npm test` plus the two E2E flows):
+// Full-mode per-suite plan (mirrors `npm test` plus the two E2E flows):
 //   test-desktop-contract.js          contract
 //   test-shared-detect.js             detection (stub/generic/YouTube/Bilibili)
 //   test-storage.js                   storage (encrypted persistence)
@@ -26,7 +35,7 @@
 // Each child's live output streams through to stdout so CI logs stay
 // readable; the Results line is matched out of the same stream.
 //
-// Run: node scripts/ci-test-summary.js
+// Run: node scripts/ci-test-summary.js [--light]
 //
 
 'use strict';
@@ -37,7 +46,13 @@ const path = require('path');
 
 const APP_ROOT = path.resolve(__dirname, '..');
 
-const SUITES = [
+// --light: pure-Node suites only. The bridge edge-case suite is included:
+// its in-process sections carry the bulk of the behavioral checks, and its
+// real-Electron section SKIPs by itself when node_modules/electron/dist is
+// absent (which `npm ci --ignore-scripts` guarantees on the Light job).
+const LIGHT_MODE = process.argv.includes('--light');
+
+const FULL_SUITES = [
   { name: 'Contract', script: 'test-desktop-contract.js', countsResults: true },
   { name: 'Detection', script: 'test-shared-detect.js', countsResults: true },
   { name: 'Storage', script: 'test-storage.js', countsResults: true },
@@ -50,6 +65,17 @@ const SUITES = [
   { name: 'Desktop smoke', script: 'run-desktop-bridge.js', countsResults: false },
   { name: 'Extension E2E', script: 'test-extension-e2e.js', countsResults: false }
 ];
+
+const LIGHT_SUITES = [
+  { name: 'Contract', script: 'test-desktop-contract.js', countsResults: true },
+  { name: 'Detection', script: 'test-shared-detect.js', countsResults: true },
+  { name: 'Storage', script: 'test-storage.js', countsResults: true },
+  { name: 'Renderer filter', script: 'test-renderer-filter.js', countsResults: true },
+  { name: 'Renderer verify', script: 'test-renderer-verify.js', countsResults: true },
+  { name: 'Bridge edge cases (in-process)', script: 'test-desktop-bridge-edge-cases.js', countsResults: true }
+];
+
+const SUITES = LIGHT_MODE ? LIGHT_SUITES : FULL_SUITES;
 
 const RESULTS_RE = /Results:\s*(\d+)\s+passed(?:,\s*(\d+)\s+failed)?/;
 
@@ -134,7 +160,7 @@ function emojiFor(status) {
 
 function buildSummaryTable(results) {
   const lines = [];
-  lines.push('### Test results');
+  lines.push(LIGHT_MODE ? '### Test results (light — pure-Node suites)' : '### Test results');
   lines.push('');
   lines.push('| Suite | Status | Passed | Failed |');
   lines.push('|-------|--------|-------:|-------:|');
@@ -185,7 +211,8 @@ function buildSummaryTable(results) {
 }
 
 async function main() {
-  console.log('AutoExtract CI: running ' + SUITES.length + ' suites\n');
+  console.log('AutoExtract CI: running ' + SUITES.length + ' suites' +
+    (LIGHT_MODE ? ' (light mode: pure Node, no Electron/browser flows)' : '') + '\n');
 
   const results = [];
   for (const suite of SUITES) {
