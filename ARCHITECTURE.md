@@ -115,6 +115,15 @@ Current scaffold state:
   `autoextract:payload` channel; the renderer pulls the backlog on load so
   history that predates the window is visible, dedupes by `receivedAt`, and can
   clear the backlog over `autoextract:clearBacklog`.
+- Filtering in the window: a search box matches link URLs and page titles/URLs
+  case-insensitively, and type chips (video/audio/hls/dash/other, with live
+  per-type counts) narrow which link rows are shown. The matching rules are
+  pure functions in `src/renderer/filter.js` — a card matched through a link
+  shows only the matching rows, a card matched through page text shows all its
+  rows, and a type filter never lets page text pass. The logic is loaded as a
+  plain CSP-safe script (`window.AutoExtractFilter`) and unit-tested under
+  Node by `test-renderer-filter.js`; if it ever fails to load, the renderer
+  falls back to showing everything (legacy behavior).
 - Persistence: the same backlog is mirrored to a JSON file
   (`<userData>/autoextract-history.json`, override with `AUTOEXTRACT_DATA_DIR`)
   via `src/storage.js`. The file is **encrypted at rest**: v2 envelopes carry

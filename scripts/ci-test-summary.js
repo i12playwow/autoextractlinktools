@@ -16,6 +16,7 @@
 //   test-desktop-contract.js          contract
 //   test-shared-detect.js             detection (stub/generic/YouTube/Bilibili)
 //   test-storage.js                   storage (encrypted persistence)
+//   test-renderer-filter.js           renderer filter (search + type chips)
 //   test-desktop-bridge-edge-cases.js bridge edge cases (in-process + real app)
 //   test-cli-extract.js               CLI (browser discovery, batch, live)
 //   run-desktop-bridge.js             desktop smoke (window + persistence)
@@ -39,6 +40,7 @@ const SUITES = [
   { name: 'Contract', script: 'test-desktop-contract.js', countsResults: true },
   { name: 'Detection', script: 'test-shared-detect.js', countsResults: true },
   { name: 'Storage', script: 'test-storage.js', countsResults: true },
+  { name: 'Renderer filter', script: 'test-renderer-filter.js', countsResults: true },
   { name: 'Bridge edge cases', script: 'test-desktop-bridge-edge-cases.js', countsResults: true },
   { name: 'CLI extract', script: 'test-cli-extract.js', countsResults: true },
   // The smoke and E2E harnesses are pass/fail scripts without a "Results:"

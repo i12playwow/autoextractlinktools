@@ -11,8 +11,8 @@ Project identity metadata lives in `.freebuff/project-id` and is intentionally l
 ## Current components
 
 - `src/main.js` — Electron desktop app; runs the localhost HTTP bridge (default `127.0.0.1:3456`) that accepts `POST /` JSON payloads of extracted links, keeps a bounded backlog backed by an encrypted-at-rest history file (`<userData>/autoextract-history.json`, override with `AUTOEXTRACT_DATA_DIR`; AES-256-GCM via the OS keystore or a local keyfile), and broadcasts each payload to the renderer window.
-- `src/renderer/` + `src/preload.js` — minimal window showing a live list of received links (page title/url, per-link type chips and metadata, Clear button). Context-isolated with a sandboxed preload; history that arrived before the window opened is shown via a backlog pull.
-- `shared/index.js` — shared detection/extraction logic used by the extension and the userscript. Implements three modes in precedence order: the `[data-autoextract]` stub contract (for tests), a YouTube site rule (parses the inline `ytInitialPlayerResponse` for formats, adaptive formats, and HLS/DASH manifests), a Bilibili site rule (parses the inline `window.__playinfo__` for DASH video/audio streams and legacy durl files), and a generic media scan (`<video>`/`<audio>`/`<source>` elements and media-file anchors) as fallback on any page.
+- `src/renderer/` + `src/preload.js` — minimal window showing a live list of received links (page title/url, per-link type chips and metadata, Clear button) with a search box (matches link URLs and page titles/URLs, case-insensitively) and per-type chip filters (video/audio/hls/dash/other, with counts). Filtering rules live in the pure `src/renderer/filter.js`, unit-tested by `test-renderer-filter.js`. Context-isolated with a sandboxed preload; history that arrived before the window opened is shown via a backlog pull.
+- `shared/index.js` — shared detection/extraction logic used by the extension and the userscript. Implements three modes in precedence order: the `[data-autoextract]` stub contract (for tests), a YouTube rule (parses the inline `ytInitialPlayerResponse` for formats, adaptive formats, and HLS/DASH manifests), a Bilibili rule (parses the inline `window.__playinfo__` for DASH video/audio streams and legacy durl files), and a generic media scan (`<video>`/`<audio>`/`<source>` elements and media-file anchors) as fallback on any page.
 - `chrome-extension/` — MV3 extension: `background.js` (service worker that forwards links to the desktop bridge and resolves tab ids), `content.js` (detection, per-tab storage, auto-forward), `popup.html`/`popup.js` (results UI with copy/send actions), `manifest.json`.
 - `userscript/autoextract.js` — alternative page-injection path with the same detection logic inlined; forwards to the desktop bridge directly.
 - `bin/autoextract.js` — CLI. `autoextract extract <url>` runs a headless Chromium-based browser (Chrome/Edge/Brave, or `--browser <path>`), injects the shared module into the page, and prints the found links; `--json` for machine-readable output, `--send` to forward to the desktop bridge. `autoextract start` launches the desktop app.
@@ -23,7 +23,8 @@ Project identity metadata lives in `.freebuff/project-id` and is intentionally l
 ```sh
 npm install          # install dependencies (Electron included)
 npm run desktop      # start the desktop app and its bridge
-npm test             # contract + detection/YouTube + bridge edge-case suites
+npm test             # contract + detection + storage + renderer filter +
+                     # bridge edge-case + CLI suites
 node run-desktop-bridge.js   # end-to-end smoke test of the real Electron bridge
 node test-extension-e2e.js   # extension E2E: loads the packed extension in a
                              # headless browser and asserts bridge delivery
@@ -60,8 +61,9 @@ See `ARCHITECTURE.md` for the bridge contract and design decisions.
 ## CI
 
 GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
-all suites — contract, detection, storage, bridge edge cases, CLI, the desktop
-smoke test, and the extension E2E — on every push and pull request, on both
+all suites — contract, detection, storage, renderer filter, bridge edge cases,
+CLI, the desktop smoke test, and the extension E2E — on every push and pull
+request, on both
 Ubuntu (under `xvfb-run`, since Electron and the headless extension browser
 need a display) and Windows, and writes a per-suite results table to the
 run's summary. The Electron binary is cached; if its download fails, the

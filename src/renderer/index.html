@@ -18,6 +18,15 @@
     </div>
   </header>
 
+  <div id="filter-bar">
+    <input id="search-input" type="search" placeholder="Search URLs, page titles&hellip;"
+           aria-label="Search link history" autocomplete="off" spellcheck="false">
+    <div id="type-chips" role="group" aria-label="Filter by link type">
+      <!-- chips are rendered by renderer.js from filter.TYPES with per-type counts -->
+    </div>
+    <span id="filter-status" class="status" role="status" aria-live="polite"></span>
+  </div>
+
   <main id="list" role="list" aria-label="Received links"></main>
 
   <div id="empty" class="empty hidden">
@@ -26,6 +35,12 @@
     AutoExtract extension, and forwarded links will appear here live.</p>
   </div>
 
+  <div id="no-match" class="empty hidden">
+    <p>No links match the current filter.</p>
+    <p class="hint">Adjust the search text or turn type filters off to see more of the history.</p>
+  </div>
+
+  <script src="filter.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
