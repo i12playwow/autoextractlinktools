@@ -75,7 +75,11 @@ body {
   text-overflow: ellipsis;
 }
 
-#sb-history { flex: 1 1 auto; min-width: 60px; }
+#sb-history { flex: 1 1 auto; min-width: 60px; cursor: default; }
+
+#sb-history.clickable { cursor: pointer; }
+
+#sb-history.clickable:hover { color: var(--accent-text); }
 
 .sb-sep { flex: none; color: var(--border); }
 

@@ -16,6 +16,10 @@
 //   - getAppInfo(): Promise<{bridgeHost, historyFile}> -> display facts for
 //     the footer status bar (endpoint and history file path). Read-only and
 //     resolved once at startup.
+//   - revealHistoryFolder(): Promise<{ok, error?}> -> open the history
+//     file's folder in the OS file manager (file selected). Takes no
+//     argument: main reveals its own stored path, so no file: URL is ever
+//     passed over IPC.
 //
 // The renderer has no Node, no direct ipcRenderer, and no way to invoke any
 // other channel: this file is the entire attack surface.
@@ -60,5 +64,9 @@ contextBridge.exposeInMainWorld('autoextract', {
 
   getAppInfo: function () {
     return ipcRenderer.invoke('autoextract:getAppInfo');
+  },
+
+  revealHistoryFolder: function () {
+    return ipcRenderer.invoke('autoextract:revealHistoryFolder');
   }
 });

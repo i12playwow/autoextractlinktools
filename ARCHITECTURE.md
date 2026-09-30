@@ -141,7 +141,11 @@ Current scaffold state:
   the bridge endpoint (`host:port`), the history file path (both supplied by
   the main process over `autoextract:getAppInfo`, read-only strings), and
   the current payload count, which the renderer tracks from its own records
-  and updates on every payload and on Clear.
+  and updates on every payload and on Clear. Clicking the history path asks
+  main over the argument-less `autoextract:revealHistoryFolder` channel to
+  `shell.showItemInFolder` the file — main uses its own stored path, so no
+  `file:` URL ever crosses IPC and the http/https-only `openExternal`
+  allowlist stays untouched.
 - Filtering in the window: a search box matches link URLs and page titles/URLs
   case-insensitively, and type chips (video/audio/hls/dash/other, with live
   per-type counts) narrow which link rows are shown. The matching rules are

@@ -33,7 +33,9 @@
 //   - A footer status bar shows the bridge endpoint, the history file path,
 //     and the payload count; main reports both paths over
 //     autoextract:getAppInfo once, and the count updates on every payload
-//     and Clear.
+//     and Clear. Clicking the history path asks main (over the argument-less
+//     revealHistoryFolder channel) to open the file's folder with the file
+//     selected.
 
 'use strict';
 
@@ -88,6 +90,24 @@ function updateStatusBar() {
     sbCountEl.textContent = records.length +
       (records.length === 1 ? ' payload' : ' payloads');
   }
+}
+
+// Makes the footer's history slot clickable: one click asks main to reveal
+// the history file in the OS file manager. Wired once after getAppInfo
+// resolves, so the slot is only clickable when there is a real path behind
+// it. The renderer sends no path argument — main reveals its own.
+function initHistoryReveal() {
+  if (!sbHistoryEl || !appInfo || !appInfo.historyFile) {
+    return;
+  }
+  if (!window.autoextract || typeof window.autoextract.revealHistoryFolder !== 'function') {
+    return;
+  }
+  sbHistoryEl.classList.add('clickable');
+  sbHistoryEl.title = appInfo.historyFile + ' (click to reveal)';
+  sbHistoryEl.addEventListener('click', function () {
+    window.autoextract.revealHistoryFolder().catch(function () {});
+  });
 }
 
 function updateEmptyState() {
@@ -591,6 +611,7 @@ function init() {
     window.autoextract.getAppInfo().then(function (info) {
       appInfo = info || null;
       updateStatusBar();
+      initHistoryReveal();
     }).catch(function () {});
   }
 

@@ -467,6 +467,22 @@ function registerIpc() {
       historyFile: historyFilePathForDisplay
     };
   });
+
+  // Footer "reveal history file" action. Deliberately takes NO argument:
+  // the renderer only ever sees this path as display text, so main uses its
+  // own stored path here. (The openExternal allowlist stays http/https-only;
+  // no file: URL ever crosses IPC.) showItemInFolder opens the parent folder
+  // with the history file selected, on every supported platform.
+  ipcMain.handle('autoextract:revealHistoryFolder', function () {
+    if (!historyFilePathForDisplay) {
+      return { ok: false, error: 'unavailable' };
+    }
+    if (!shell || typeof shell.showItemInFolder !== 'function') {
+      return { ok: false, error: 'shell unavailable' };
+    }
+    shell.showItemInFolder(historyFilePathForDisplay);
+    return { ok: true };
+  });
 }
 
 function createMainWindow() {
