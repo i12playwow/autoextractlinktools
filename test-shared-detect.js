@@ -745,6 +745,178 @@ test('bilibili: isBilibiliHost unit checks', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Vimeo site-specific extraction tests
+// ---------------------------------------------------------------------------
+
+const VIMEO_PROGRESSIVE_URL = 'https://vod-progressive.akamaized.net/exp=1234567/v.mp4';
+const VIMEO_HLS_URL = 'https://vod-adaptive-ak.vimeocdn.com/exp=1234567/playlist.m3u8?sig=a';
+const VIMEO_HLS_ALT_URL = 'https://skyfire.vimeocdn.com/1234567/playlist.m3u8?sig=b';
+const VIMEO_DASH_URL = 'https://vod-adaptive-ak.vimeocdn.com/exp=1234567/playlist.mpd?sig=c';
+
+function makeVimeoFiles(overrides) {
+  return Object.assign({
+    progressive: [
+      {
+        url: VIMEO_PROGRESSIVE_URL,
+        quality: '1080p',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        size: 73400320,
+        mime: 'video/mp4'
+      }
+    ],
+    hls: {
+      cdns: {
+        akfire_interconnect_quic: { url: VIMEO_HLS_URL, avc_url: VIMEO_HLS_URL },
+        fastly_skyfire: { url: VIMEO_HLS_ALT_URL }
+      },
+      default_cdn: 'akfire_interconnect_quic'
+    },
+    dash: {
+      cdns: {
+        akfire_interconnect_quic: { avc_url: VIMEO_DASH_URL },
+        fastly_skyfire: { url: 'https://skyfire.vimeocdn.com/1234567/playlist.mpd?sig=d' }
+      },
+      default_cdn: 'akfire_interconnect_quic'
+    }
+  }, overrides || {});
+}
+
+function makeVimeoConfig(files) {
+  return {
+    request: { files: files },
+    video: { id: 76979871, title: 'The New Vimeo Player (You Know, For Videos)' }
+  };
+}
+
+function makeVimeoDoc(config, extraElements) {
+  const doc = new DocumentShim('https://player.vimeo.com/video/76979871');
+  const script = makeElement('script', []);
+  script.textContent = 'window.playerConfig=' + JSON.stringify(config) + ';';
+  doc.register(script);
+  (extraElements || []).forEach((el) => doc.register(el));
+  return doc;
+}
+
+test('vimeo: full player config yields progressive + HLS + DASH links with metadata', () => {
+  const doc = makeVimeoDoc(makeVimeoConfig(makeVimeoFiles()));
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+
+  const detection = AE.detect(context);
+  assert(detection && detection.type === 'vimeo', 'detect should report vimeo, got ' + JSON.stringify(detection));
+  assert(detection.videoId === '76979871', 'detection should carry the video id');
+  assert(detection.linkCount === 3, 'expected 3 links in detection, got ' + detection.linkCount);
+  assert(detection.progressiveCount === 1, 'progressive count carried');
+
+  const results = AE.extract(context);
+  assert(results.links.length === 3, 'expected 3 links (1 progressive + 2 manifests), got ' + results.links.length);
+  assert(results.sources.length === 1 && results.sources[0].element === 'window.playerConfig', 'source element recorded');
+  assert(results.sources[0].attributes.indexOf('request.files.progressive') !== -1, 'progressive attribute recorded');
+  assert(results.sources[0].attributes.indexOf('request.files.hls') !== -1, 'hls attribute recorded');
+  assert(results.sources[0].attributes.indexOf('request.files.dash') !== -1, 'dash attribute recorded');
+
+  const progressive = results.links.find((l) => l.url === VIMEO_PROGRESSIVE_URL);
+  assert(progressive && progressive.server === 'Vimeo' && progressive.type === 'video', 'progressive file emitted');
+  assert(progressive.quality === '1080p' && progressive.container === 'mp4', 'progressive quality/container carried');
+  assert(progressive.size === '1920x1080' && progressive.fps === 30 && progressive.bytes === 73400320, 'progressive numeric metadata carried');
+
+  const hls = results.links.find((l) => l.url === VIMEO_HLS_URL);
+  assert(hls && hls.type === 'hls' && hls.server === 'Vimeo', 'default CDN HLS manifest emitted');
+  assert(results.links.every((l) => l.url !== VIMEO_HLS_ALT_URL), 'alternate CDN not listed');
+
+  const dash = results.links.find((l) => l.url === VIMEO_DASH_URL);
+  assert(dash && dash.type === 'dash', 'dash avc_url used as manifest URL');
+
+  assert(results.meta.videoId === '76979871', 'meta carries videoId');
+  assert(results.meta.hlsCdnCount === 2 && results.meta.dashCdnCount === 2, 'CDN alternate counts in meta');
+});
+
+test('vimeo: manifest-only config (DRM-gated, empty progressive) still emits manifests', () => {
+  const doc = makeVimeoDoc(makeVimeoConfig(makeVimeoFiles({ progressive: [] })));
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+
+  const detection = AE.detect(context);
+  assert(detection && detection.type === 'vimeo', 'manifest-only page is still vimeo, got ' + JSON.stringify(detection));
+  assert(detection.progressiveCount === 0, 'no progressive entries');
+
+  const results = AE.extract(context);
+  assert(results.links.length === 2, 'exactly the two manifest links, got ' + results.links.length);
+  assert(results.links.every((l) => l.type === 'hls' || l.type === 'dash'), 'only manifest links present');
+  assert(results.sources[0].attributes.indexOf('request.files.progressive') === -1, 'empty progressive not recorded as used');
+});
+
+test('vimeo: missing default_cdn falls back to the first usable CDN', () => {
+  const files = makeVimeoFiles({
+    hls: {
+      cdns: {
+        fastly_skyfire: { url: VIMEO_HLS_ALT_URL }
+      }
+    }
+  });
+  const doc = makeVimeoDoc(makeVimeoConfig(files));
+  const AE = loadAutoExtract(doc);
+  const results = AE.extract(makeContext(doc));
+  const hls = results.links.find((l) => l.type === 'hls');
+  assert(hls && hls.url === VIMEO_HLS_ALT_URL, 'first CDN entry used without default_cdn, got ' + JSON.stringify(results.links));
+});
+
+test('vimeo: malformed playerConfig JSON falls back to the generic scan', () => {
+  const doc = new DocumentShim('https://player.vimeo.com/video/1');
+  const brokenScript = makeElement('script', []);
+  brokenScript.textContent = 'window.playerConfig={"request":{"files": truncated';
+  const video = makeElement('video', ['src=https://cdn.example.com/vimeo-clip.mp4']);
+  doc.register(brokenScript);
+  doc.register(video);
+
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+  const detection = AE.detect(context);
+  assert(detection && detection.type === 'generic', 'should fall back to generic, got ' + JSON.stringify(detection));
+  const results = AE.extract(context);
+  assert(results.links.length === 1 && results.links[0].url === 'https://cdn.example.com/vimeo-clip.mp4', 'generic link used as fallback');
+});
+
+test('vimeo: host gating ignores playerConfig on other sites', () => {
+  const doc = new DocumentShim('https://evil.example.com/embed');
+  const script = makeElement('script', []);
+  script.textContent = 'window.playerConfig=' + JSON.stringify(makeVimeoConfig(makeVimeoFiles())) + ';';
+  doc.register(script);
+
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+  const detection = AE.detect(context);
+  assert(detection === null, 'non-Vimeo host must not trigger vimeo detection, got ' + JSON.stringify(detection));
+  assert(AE.extract(context).links.length === 0, 'no links from foreign host player config');
+});
+
+test('vimeo: blob URLs excluded from fallback merge, links deduped', () => {
+  const blobVideo = makeElement('video', ['src=blob:https://player.vimeo.com/aaaa-bbbb']);
+  const doc = makeVimeoDoc(makeVimeoConfig(makeVimeoFiles()), [blobVideo]);
+  const AE = loadAutoExtract(doc);
+  const context = makeContext(doc);
+
+  const results = AE.extract(context);
+  assert(results.links.every((l) => l.url.indexOf('blob:') !== 0), 'blob URLs must be excluded on Vimeo');
+  const urls = results.links.map((l) => l.url);
+  assert(new Set(urls).size === urls.length, 'no duplicate urls in merged results');
+  assert(results.links.length === 3, 'expected exactly the 3 vimeo links, got ' + results.links.length);
+});
+
+test('vimeo: isVimeoHost unit checks', () => {
+  const internal = loadAutoExtract(new DocumentShim('http://localhost:9999/x'))._internal;
+  assert(internal.isVimeoHost('www.vimeo.com') === true, 'www subdomain');
+  assert(internal.isVimeoHost('vimeo.com') === true, 'apex');
+  assert(internal.isVimeoHost('player.vimeo.com') === true, 'player subdomain');
+  assert(internal.isVimeoHost('vimeo.com.evil.com') === false, 'suffix lookalike rejected');
+  assert(internal.isVimeoHost('notvimeo.com') === false, 'prefix lookalike rejected');
+  assert(internal.isVimeoHost('') === false, 'empty host');
+  assert(internal.isVimeoHost(null) === false, 'null host');
+});
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 

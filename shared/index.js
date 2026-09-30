@@ -46,18 +46,26 @@
 //      (complete muxed files on older videos) are emitted as video links.
 //      The player streams via MSE, so blob: URLs are excluded from the
 //      generic fallback on Bilibili pages, same as YouTube.
-//   4. Generic media scan (fallback on every page):
+//   4. Vimeo (site-specific):
+//      On *.vimeo.com pages (vimeo.com watch pages and player.vimeo.com
+//      embeds), the inline script assigning window.playerConfig is located
+//      and parsed. request.files.progressive entries are emitted as direct
+//      video links with quality/container/size metadata, and the HLS/DASH
+//      manifest bundles are emitted via their default CDN (cdns map +
+//      default_cdn; other CDNs are counted as alternates, not listed).
+//      The player streams via MSE/DRM, so blob: URLs are excluded from the
+//      generic fallback on Vimeo pages, same as YouTube and Bilibili.
+//   5. Generic media scan (fallback on every page):
 //      The module scans for media on any page:
 //        - <video>/<audio> elements (src attribute, or nested <source> children)
 //        - standalone <source> elements
 //        - anchors (<a href>) pointing at media file extensions
 //      blob: and http(s) URLs are included; data: URLs are skipped because they
-//      are not forwardable links. On YouTube specifically, blob: URLs are
-//      excluded even in the fallback, because the player streams via MSE and
-//      blob URLs are unusable outside the page.
+//      are not forwardable links. On YouTube, Bilibili, and Vimeo, blob: URLs
+//      are excluded even in the fallback, because their players stream via MSE
+//      and blob URLs are unusable outside the page.
 //
 // TODO:
-//   - Add more site/player-specific rules (Vimeo) on top of the generic scan.
 //   - Optional: implement signatureCipher deciphering (requires fetching and
 //     evaluating YouTube player code; deliberately out of scope for now).
 
@@ -721,6 +729,219 @@
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Vimeo site-specific extraction
+  // ---------------------------------------------------------------------------
+  //
+  // Vimeo embed pages (player.vimeo.com) embed the player config as an inline
+  // script assigning window.playerConfig (a JSON object; the same document the
+  // player itself uses). request.files carries the stream payload:
+  //   - request.files.progressive: direct progressive files (mp4/webm) with
+  //     url, quality (e.g. '1080p'), width/height, fps, and size in bytes;
+  //     emitted as video links.
+  //   - request.files.hls / request.files.dash: adaptive manifest bundles with
+  //     a cdns map keyed by CDN name (akfire_interconnect_quic, fastly_skyfire,
+  //     ...) and default_cdn; each CDN entry carries url, avc_url, and
+  //     fallback_url variants. The default CDN's url (avc_url fallback) is
+  //     emitted as an hls/dash link; the other CDNs are counted in meta so the
+  //     same stream is not listed once per CDN.
+  //   - request.files.progressive may be empty on DRM-gated videos where only
+  //     manifests are available; the rule stays useful by emitting the
+  //     manifests. DRM-encrypted manifests are still listed (they are the
+  //     stream URLs the player itself uses) — playback of them is out of scope.
+  // On www.vimeo.com watch pages the player lives in an iframe pointing at
+  // player.vimeo.com, so the site rule targets both hosts.
+
+  var VIMEO_HOST_PATTERN = /(^|\.)vimeo\.com$/i;
+
+  function isVimeoHost(hostname) {
+    return typeof hostname === 'string' && VIMEO_HOST_PATTERN.test(hostname);
+  }
+
+  function parseVimeoPlayerConfig(context) {
+    var doc = context && context.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') {
+      return null;
+    }
+    var scripts = queryAll(doc, 'script');
+    for (var i = 0; i < scripts.length; i++) {
+      var el = scripts[i];
+      var text = el && typeof el.textContent === 'string' ? el.textContent : '';
+      if (text.indexOf('playerConfig') === -1) {
+        continue;
+      }
+      var json = extractJsonAssignment(text, 'playerConfig');
+      if (!json) {
+        continue;
+      }
+      try {
+        var parsed = JSON.parse(json);
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      } catch (error) {
+        // Malformed or truncated assignment: try the next script.
+      }
+    }
+    return null;
+  }
+
+  // Converts one progressive file entry into a link, or null when the entry
+  // has no usable URL.
+  function vimeoLinkFromProgressive(file) {
+    if (!file || typeof file !== 'object') {
+      return null;
+    }
+    var raw = pickString(file, ['url']);
+    if (!raw) {
+      return null;
+    }
+    var parsed = safeParseUrl(raw);
+    if (!parsed || !shouldIncludeUrl(parsed)) {
+      return null;
+    }
+
+    var link = {
+      server: 'Vimeo',
+      type: 'video',
+      url: parsed.href
+    };
+
+    if (typeof file.quality === 'string' && file.quality) {
+      link.quality = file.quality;
+    }
+    var mime = mimeContainer(file.mime);
+    if (mime && (mime.kind === 'video' || mime.kind === 'audio')) {
+      link.container = mime.container;
+    }
+    if (typeof file.width === 'number' && typeof file.height === 'number') {
+      link.size = file.width + 'x' + file.height;
+    }
+    if (typeof file.fps === 'number' && file.fps > 0) {
+      link.fps = file.fps;
+    }
+    if (typeof file.size === 'number' && file.size > 0) {
+      link.bytes = file.size;
+    }
+
+    return link;
+  }
+
+  // Emits the default CDN's manifest URL for hls/dash bundles; other CDNs are
+  // alternates for the same stream and are only counted, not listed.
+  function vimeoLinkFromManifestBundle(bundle, type) {
+    if (!bundle || typeof bundle !== 'object') {
+      return null;
+    }
+    var cdns = bundle.cdns && typeof bundle.cdns === 'object' ? bundle.cdns : null;
+    if (!cdns) {
+      // Non-standard shape without a cdns map: accept direct url/avc_url.
+      var direct = pickString(bundle, ['url', 'avc_url']);
+      if (!direct) {
+        return null;
+      }
+      var directParsed = safeParseUrl(direct);
+      return directParsed && shouldIncludeUrl(directParsed)
+        ? { server: 'Vimeo', type: type, url: directParsed.href }
+        : null;
+    }
+
+    var preferred = typeof bundle.default_cdn === 'string' && cdns[bundle.default_cdn]
+      ? cdns[bundle.default_cdn]
+      : null;
+    if (!preferred) {
+      // Fall back to the first CDN entry with a usable URL.
+      var names = Object.keys(cdns);
+      for (var i = 0; i < names.length; i++) {
+        if (cdns[names[i]] && typeof cdns[names[i]] === 'object') {
+          preferred = cdns[names[i]];
+          break;
+        }
+      }
+    }
+    if (!preferred) {
+      return null;
+    }
+
+    var raw = pickString(preferred, ['url', 'avc_url', 'fallback_url']);
+    if (!raw) {
+      return null;
+    }
+    var parsed = safeParseUrl(raw);
+    if (!parsed || !shouldIncludeUrl(parsed)) {
+      return null;
+    }
+    return { server: 'Vimeo', type: type, url: parsed.href };
+  }
+
+  // Returns { links, sources, meta } or null when no player config payload
+  // can be extracted. meta carries counts for detection and diagnostics.
+  function extractVimeo(context) {
+    var config = parseVimeoPlayerConfig(context);
+    if (!config || !config.request || typeof config.request !== 'object') {
+      return null;
+    }
+    var files = config.request.files && typeof config.request.files === 'object'
+      ? config.request.files
+      : null;
+    if (!files) {
+      return null;
+    }
+
+    var links = [];
+    var seen = {};
+
+    function addLink(link) {
+      if (link && !seen[link.url]) {
+        seen[link.url] = true;
+        links.push(link);
+      }
+    }
+
+    var progressive = Array.isArray(files.progressive) ? files.progressive : [];
+    progressive.forEach(function (entry) {
+      addLink(vimeoLinkFromProgressive(entry));
+    });
+
+    var hlsLink = vimeoLinkFromManifestBundle(files.hls, 'hls');
+    addLink(hlsLink);
+
+    var dashLink = vimeoLinkFromManifestBundle(files.dash, 'dash');
+    addLink(dashLink);
+
+    if (links.length === 0) {
+      return null;
+    }
+
+    var usedAttributes = [];
+    if (progressive.length > 0) {
+      usedAttributes.push('request.files.progressive');
+    }
+    if (hlsLink) {
+      usedAttributes.push('request.files.hls');
+    }
+    if (dashLink) {
+      usedAttributes.push('request.files.dash');
+    }
+
+    var video = config.video && typeof config.video === 'object' ? config.video : null;
+
+    return {
+      links: links,
+      sources: [{ element: 'window.playerConfig', attributes: usedAttributes }],
+      meta: {
+        videoId: video && video.id !== undefined && video.id !== null ? String(video.id) : null,
+        progressiveCount: progressive.length,
+        hlsCdnCount: files.hls && files.hls.cdns && typeof files.hls.cdns === 'object'
+          ? Object.keys(files.hls.cdns).length
+          : 0,
+        dashCdnCount: files.dash && files.dash.cdns && typeof files.dash.cdns === 'object'
+          ? Object.keys(files.dash.cdns).length
+          : 0
+      }
+    };
+  }
+
   // Generic extraction: real media elements and media anchors, deduplicated
   // by fully-resolved URL.
   function extractGeneric(context) {
@@ -807,6 +1028,21 @@
       // No playinfo payload: fall through to the generic scan.
     }
 
+    // Vimeo site-specific detection.
+    if (isVimeoHost(host || '')) {
+      var vimeoResult = extractVimeo(context);
+      if (vimeoResult && vimeoResult.links.length > 0) {
+        return {
+          supported: true,
+          type: 'vimeo',
+          videoId: vimeoResult.meta.videoId,
+          linkCount: vimeoResult.links.length,
+          progressiveCount: vimeoResult.meta.progressiveCount
+        };
+      }
+      // No player config payload: fall through to the generic scan.
+    }
+
     var items = scanMedia(context);
     if (items.length === 0) {
       return null;
@@ -880,6 +1116,12 @@
       return mergeSiteAndGeneric(context, extractBilibili(context), true);
     }
 
+    if (isVimeoHost(host || '')) {
+      // Vimeo's player streams via MSE/DRM like YouTube and Bilibili, so blob:
+      // URLs from the fallback are unusable outside the page.
+      return mergeSiteAndGeneric(context, extractVimeo(context), true);
+    }
+
     return extractGeneric(context);
   }
 
@@ -895,11 +1137,13 @@
         MEDIA_EXTENSIONS: MEDIA_EXTENSIONS,
         isYouTubeHost: isYouTubeHost,
         isBilibiliHost: isBilibiliHost,
+        isVimeoHost: isVimeoHost,
         contextHost: contextHost,
         extractJsonAssignment: extractJsonAssignment,
         parsePlayerResponse: parsePlayerResponse,
         extractYouTube: extractYouTube,
         extractBilibili: extractBilibili,
+        extractVimeo: extractVimeo,
         mergeSiteAndGeneric: mergeSiteAndGeneric
       }
     };

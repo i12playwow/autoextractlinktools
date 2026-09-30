@@ -148,13 +148,16 @@ Current scaffold state:
 
 ## Out of scope for now
 
-- Site-by-site extraction rules beyond YouTube and Bilibili. The shared module
-  implements a YouTube rule (inline `ytInitialPlayerResponse` parsing, formats,
-  adaptiveFormats, HLS/DASH manifests; ciphered formats are counted but never
-  emitted) and a Bilibili rule (inline `window.__playinfo__` parsing, DASH
-  video/audio plus dolby/flac extras and legacy durl files, quality labels,
-  codecs, bitrates), plus a generic fallback scan; a Vimeo rule is still
-  unimplemented.
+- Site-by-site extraction rules beyond YouTube, Bilibili, and Vimeo. The shared
+  module implements a YouTube rule (inline `ytInitialPlayerResponse` parsing,
+  formats, adaptiveFormats, HLS/DASH manifests; ciphered formats are counted
+  but never emitted), a Bilibili rule (inline `window.__playinfo__` parsing,
+  DASH video/audio plus dolby/flac extras and legacy durl files, quality
+  labels, codecs, bitrates), a Vimeo rule (inline `window.playerConfig`
+  parsing: progressive files with quality/container/size metadata and HLS/DASH
+  manifest bundles emitted via their default CDN — other CDNs are counted as
+  alternates, not listed; works on both vimeo.com and player.vimeo.com), plus
+  a generic fallback scan.
 - YouTube signatureCipher deciphering, which would require fetching and
   evaluating player code that changes across player releases.
 - Any specific download manager integration, including IDM-style behavior, until that is explicitly in scope.

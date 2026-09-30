@@ -18,6 +18,7 @@
         "https://www.youtube.com/*",
         "https://www.bilibili.com/*",
         "https://vimeo.com/*",
+        "https://player.vimeo.com/*",
         "http://localhost:*/*",
         "https://localhost/*"
       ],
