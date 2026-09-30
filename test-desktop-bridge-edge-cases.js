@@ -245,6 +245,49 @@ async function runInProcessTests() {
     await expectResponse('empty links array is accepted', PORT, 'POST', '/', { links: [] }, 200, '"ok":true');
   });
 
+  section('in-process: isSafeExternalUrl (renderer open-in-browser guard)');
+
+  // shell.openExternal hands URLs to the operating system, so the renderer's
+  // "open" action is re-validated in main before it can reach it. These tests
+  // pin the allowlist behavior exported by src/main.js.
+  {
+    const safeCases = [
+      ['https://example.com/video.mp4', 'https://example.com/video.mp4'],
+      ['http://example.com/v.mp4', 'http://example.com/v.mp4'],
+      ['https://Example.com/Path', 'https://example.com/Path'],
+      ['https://example.com:443/x', 'https://example.com/x']
+    ];
+    const safeErrors = [];
+    safeCases.forEach(([raw, expected]) => {
+      const got = mainModule.isSafeExternalUrl(raw);
+      if (got !== expected) {
+        safeErrors.push({ raw, expected, got });
+      }
+    });
+    expect(safeErrors.length, 0, 'safe http/https URLs accepted and normalized: ' + JSON.stringify(safeErrors));
+    pass('http/https URLs are accepted and normalized');
+
+    const unsafe = [
+      'file:///C:/Windows/notepad.exe',
+      'javascript:alert(1)',
+      'data:text/html,<b>x</b>',
+      'ftp://example.com/file',
+      'chrome://settings',
+      'vimeo://app',
+      '//example.com/protocol-relative',
+      'not a url at all',
+      '',
+      '   ',
+      null,
+      undefined,
+      42,
+      {}
+    ];
+    const rejected = unsafe.filter((raw) => mainModule.isSafeExternalUrl(raw) !== null);
+    expect(rejected.length, 0, 'unsafe inputs must all be rejected, got ' + JSON.stringify(rejected));
+    pass('non-http(s), unparsable, and non-string inputs are rejected');
+  }
+
   section('in-process: protocol and sequencing');
 
   await withServer(PORT, async () => {

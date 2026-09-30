@@ -159,6 +159,38 @@ body {
   text-align: left;
 }
 
+.link-url.clickable { cursor: copy; }
+
+.row-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.row-btn {
+  background: var(--bg);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 7px;
+  font-size: 10px;
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.row-btn:hover {
+  color: var(--text);
+  border-color: var(--accent-text);
+  filter: brightness(1.2);
+}
+
+.row-btn.copied {
+  color: #7dd487;
+  border-color: #7dd487;
+}
+
 #filter-bar {
   display: flex;
   align-items: center;

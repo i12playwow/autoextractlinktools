@@ -45,7 +45,7 @@
 
 'use strict';
 
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
@@ -275,6 +275,29 @@ function stopBridgeForTests() {
 // Renderer window + IPC
 // ---------------------------------------------------------------------------
 
+// Strict allowlist for URLs the renderer asks to open in the system browser.
+// shell.openExternal hands the URL to the OS, so anything beyond http/https
+// (file:, javascript:, custom scheme handlers, ...) must never reach it.
+// Returns the normalized href when safe, or null.
+function isSafeExternalUrl(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return null;
+  }
+  var parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch (error) {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return null;
+  }
+  if (!parsed.hostname) {
+    return null;
+  }
+  return parsed.href;
+}
+
 function registerIpc() {
   // Renderer asks for everything received so far (history that predates the
   // window). Returns a copy so the renderer cannot mutate the backlog.
@@ -291,6 +314,24 @@ function registerIpc() {
       payloadStore.clear();
       payloadStore.flushNow();
     }
+  });
+
+  // Renderer "open in browser" action. The URL is re-validated here: the
+  // renderer is untrusted input for this purpose, and shell.openExternal
+  // must only ever receive http/https URLs (guarded by isSafeExternalUrl).
+  ipcMain.handle('autoextract:openExternal', function (_event, rawUrl) {
+    var safe = isSafeExternalUrl(rawUrl);
+    if (!safe) {
+      return { ok: false, error: 'unsafe url' };
+    }
+    if (!shell || typeof shell.openExternal !== 'function') {
+      return { ok: false, error: 'shell unavailable' };
+    }
+    return shell.openExternal(safe).then(function () {
+      return { ok: true };
+    }, function (error) {
+      return { ok: false, error: (error && error.message) || 'open failed' };
+    });
   });
 }
 
@@ -397,5 +438,6 @@ function createMainWindow() {
 
 module.exports = {
   createBridgeServer: createBridgeServer,
-  stopBridgeForTests: stopBridgeForTests
+  stopBridgeForTests: stopBridgeForTests,
+  isSafeExternalUrl: isSafeExternalUrl
 };

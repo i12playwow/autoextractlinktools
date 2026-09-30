@@ -7,6 +7,8 @@
 //   - getBacklog(): Promise<PayloadRecord[]>  -> everything received so far
 //   - onPayload(callback)                     -> live payloads (returns unsubscribe)
 //   - clearBacklog(): Promise<void>           -> clear the main-process backlog
+//   - openExternal(url): Promise<{ok, error?}> -> open an http/https URL in
+//     the system browser (main re-validates before shell.openExternal)
 //
 // The renderer has no Node, no direct ipcRenderer, and no way to invoke any
 // other channel: this file is the entire attack surface.
@@ -39,5 +41,9 @@ contextBridge.exposeInMainWorld('autoextract', {
 
   clearBacklog: function () {
     return ipcRenderer.invoke('autoextract:clearBacklog');
+  },
+
+  openExternal: function (url) {
+    return ipcRenderer.invoke('autoextract:openExternal', url);
   }
 });

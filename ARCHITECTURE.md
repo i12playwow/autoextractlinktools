@@ -115,6 +115,13 @@ Current scaffold state:
   `autoextract:payload` channel; the renderer pulls the backlog on load so
   history that predates the window is visible, dedupes by `receivedAt`, and can
   clear the backlog over `autoextract:clearBacklog`.
+- Link rows are actionable: each row has Copy and Open buttons (Copy is also
+  available by clicking the URL). Copy uses the DOM Clipboard API with an
+  `execCommand` fallback. Open asks the main process over
+  `autoextract:openExternal`, where the URL is re-validated by an http/https
+  allowlist (`isSafeExternalUrl`) before `shell.openExternal` is called, so no
+  other scheme can reach the operating system; the renderer cannot bypass this
+  because the sandboxed preload is the only IPC surface.
 - Filtering in the window: a search box matches link URLs and page titles/URLs
   case-insensitively, and type chips (video/audio/hls/dash/other, with live
   per-type counts) narrow which link rows are shown. The matching rules are

@@ -16,6 +16,11 @@
 //     live in filter.js (window.AutoExtractFilter) and are unit-tested by
 //     test-renderer-filter.js; this file only applies their verdicts.
 //   - Clear empties both the renderer view and the main-process backlog.
+//   - Link rows are actionable: Copy (button or URL click) uses the DOM
+//     Clipboard API with an execCommand fallback; Open asks the main process
+//     over autoextract:openExternal, where the URL is re-validated to http/https
+//     before shell.openExternal. The Open button only renders when the preload
+//     exposes the API.
 //   - If the preload API is missing (bridge not attached, e.g. the file opened
 //     outside Electron), the UI degrades to a disabled state instead of
 //     pretending to work. If filter.js failed to load, the filter bar hides
@@ -94,6 +99,87 @@ function makeChip(type) {
   return chip;
 }
 
+// Copies text via the async Clipboard API with a document.execCommand
+// fallback for environments where the async API is unavailable or the
+// document is not focused. Returns a promise resolving to true on success.
+function copyTextToClipboard(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    return navigator.clipboard.writeText(text).then(function () {
+      return true;
+    }).catch(function () {
+      return legacyCopy(text);
+    });
+  }
+  return Promise.resolve(legacyCopy(text));
+}
+
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (error) {
+    return false;
+  }
+}
+
+// Brief visual confirmation on an action button. The timeout is not tracked:
+// rows are cheap DOM and a stale timer on a removed node is harmless.
+function flashCopied(button) {
+  button.classList.add('copied');
+  const previous = button.textContent;
+  button.textContent = 'copied';
+  setTimeout(function () {
+    button.classList.remove('copied');
+    button.textContent = previous;
+  }, 1200);
+}
+
+// Builds the Copy / Open action cluster for one link row.
+function makeRowActions(url) {
+  const actions = document.createElement('div');
+  actions.className = 'row-actions';
+
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'row-btn';
+  copyBtn.textContent = 'copy';
+  copyBtn.title = 'Copy URL to clipboard';
+  copyBtn.addEventListener('click', function (event) {
+    event.stopPropagation();
+    copyTextToClipboard(url).then(function (ok) {
+      if (ok) {
+        flashCopied(copyBtn);
+      } else {
+        copyBtn.title = 'Copy failed; the URL may be selected manually';
+      }
+    });
+  });
+  actions.appendChild(copyBtn);
+
+  if (window.autoextract && typeof window.autoextract.openExternal === 'function') {
+    const openBtn = document.createElement('button');
+    openBtn.type = 'button';
+    openBtn.className = 'row-btn';
+    openBtn.textContent = 'open';
+    openBtn.title = 'Open in the default browser';
+    openBtn.addEventListener('click', function (event) {
+      event.stopPropagation();
+      window.autoextract.openExternal(url).catch(function () {});
+    });
+    actions.appendChild(openBtn);
+  }
+
+  return actions;
+}
+
 function makeLinkRow(link, isVisible) {
   const row = document.createElement('div');
   row.className = 'link-row';
@@ -121,14 +207,24 @@ function makeLinkRow(link, isVisible) {
   }
 
   // direction:rtl keeps long URLs ellipsized at the interesting end; wrap in a
-  // bdo-neutral span so the text itself still renders left-to-right.
+  // bdo-neutral span so the text itself still renders left-to-right. Clicking
+  // the URL is a shortcut for Copy.
   const url = document.createElement('span');
-  url.className = 'link-url';
+  url.className = 'link-url clickable';
   url.textContent = '\u200e' + link.url;
-  url.title = link.url;
+  url.title = link.url + ' (click to copy)';
+  url.addEventListener('click', function () {
+    copyTextToClipboard(link.url).then(function (ok) {
+      if (ok) { url.title = link.url + ' (copied)'; }
+    });
+  });
   detail.appendChild(url);
 
   row.appendChild(detail);
+
+  if (typeof link.url === 'string' && link.url) {
+    row.appendChild(makeRowActions(link.url));
+  }
   return row;
 }
 
