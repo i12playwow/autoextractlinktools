@@ -143,6 +143,23 @@
     return { payloads: payloads, links: links };
   }
 
+  // Human text for typeCounts output, e.g. "12 video \u00b7 3 hls". Zero-count
+  // types are omitted, order follows TYPES, unknown/missing fields count as
+  // zero, and an all-zero map yields '' (the renderer then shows the payload
+  // count alone). Used by the footer status bar's live breakdown.
+  function formatTypeCounts(counts) {
+    var parts = [];
+    var total = 0;
+    TYPES.forEach(function (t) {
+      var n = counts && typeof counts[t] === 'number' ? counts[t] : 0;
+      total += n;
+      if (n > 0) {
+        parts.push(n + ' ' + t);
+      }
+    });
+    return total === 0 ? '' : parts.join(' \u00b7 ');
+  }
+
   var api = {
     TYPES: TYPES,
     normalizeQuery: normalizeQuery,
@@ -154,6 +171,7 @@
     pageTextMatches: pageTextMatches,
     matchRecord: matchRecord,
     typeCounts: typeCounts,
+    formatTypeCounts: formatTypeCounts,
     countVisible: countVisible
   };
 

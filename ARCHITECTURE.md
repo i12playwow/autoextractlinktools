@@ -140,7 +140,10 @@ Current scaffold state:
 - Footer status bar: a monospace strip along the bottom of the window shows
   the bridge endpoint (`host:port`), the history file path (both supplied by
   the main process over `autoextract:getAppInfo`, read-only strings), and
-  the current payload count, which the renderer tracks from its own records
+  the current payload count with a live per-type link breakdown ("2 payloads
+  · 12 video · 3 hls", zero types omitted, formatted by the pure
+  `formatTypeCounts` in `src/renderer/filter.js` so the chips and the footer
+  share one source of truth), which the renderer tracks from its own records
   and updates on every payload and on Clear. Clicking the history path asks
   main over the argument-less `autoextract:revealHistoryFolder` channel to
   `shell.showItemInFolder` the file — main uses its own stored path, so no

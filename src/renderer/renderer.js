@@ -31,11 +31,12 @@
 //     unit-tested by test-renderer-verify.js). Only successes are stored, so
 //     a transient failure can never permanently brand a row dead.
 //   - A footer status bar shows the bridge endpoint, the history file path,
-//     and the payload count; main reports both paths over
-//     autoextract:getAppInfo once, and the count updates on every payload
-//     and Clear. Clicking the history path asks main (over the argument-less
-//     revealHistoryFolder channel) to open the file's folder with the file
-//     selected.
+//     and a payload count with a live per-type link breakdown (e.g.
+//     "2 payloads · 12 video · 3 hls", zero types omitted); main reports the
+//     paths over autoextract:getAppInfo once, and the count updates on every
+//     payload and Clear. Clicking the history path asks main (over the
+//     argument-less revealHistoryFolder channel) to open the file's folder
+//     with the file selected.
 
 'use strict';
 
@@ -87,8 +88,14 @@ function updateStatusBar() {
     sbHistoryEl.textContent = appInfo.historyFile;
   }
   if (sbCountEl) {
+    // Payload count plus a live per-type breakdown from the same pure
+    // source the chips use; without filter.js the count stands alone.
+    const breakdown = filterApi
+      ? filterApi.formatTypeCounts(filterApi.typeCounts(records))
+      : '';
     sbCountEl.textContent = records.length +
-      (records.length === 1 ? ' payload' : ' payloads');
+      (records.length === 1 ? ' payload' : ' payloads') +
+      (breakdown ? ' \u00b7 ' + breakdown : '');
   }
 }
 

@@ -233,6 +233,23 @@ const TESTS = [
       'null records -> zero counts');
   }],
 
+  // ---- formatTypeCounts -------------------------------------------------------
+  ['formatTypeCounts renders nonzero types in TYPES order', () => {
+    assert(filter.formatTypeCounts({ video: 12, audio: 0, hls: 3, dash: 0, other: 1 }) === '12 video \u00b7 3 hls \u00b7 1 other',
+      'nonzero types in order, got ' + filter.formatTypeCounts({ video: 12, audio: 0, hls: 3, dash: 0, other: 1 }));
+    assert(filter.formatTypeCounts({ video: 1 }) === '1 video', 'single type');
+    assert(filter.formatTypeCounts({ video: 0, audio: 2, hls: 0, dash: 0, other: 0 }) === '2 audio', 'zeros omitted');
+  }],
+
+  ['formatTypeCounts: all-zero, partial, and null maps degrade gracefully', () => {
+    assert(filter.formatTypeCounts({ video: 0, audio: 0, hls: 0, dash: 0, other: 0 }) === '', 'all zero -> empty');
+    assert(filter.formatTypeCounts({ video: 4 }) === '4 video', 'partial map');
+    assert(filter.formatTypeCounts({}) === '', 'empty map -> empty');
+    assert(filter.formatTypeCounts(null) === '', 'null -> empty');
+    assert(filter.formatTypeCounts(undefined) === '', 'undefined -> empty');
+    assert(filter.formatTypeCounts({ video: 'x', hls: 2 }) === '2 hls', 'non-numeric counts treated as zero');
+  }],
+
   // ---- countVisible -----------------------------------------------------------
   ['countVisible reports payload and link totals per state', () => {
     const records = [
