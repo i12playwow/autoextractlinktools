@@ -113,7 +113,12 @@ function startElectron(dataDir) {
         // CI runners cannot chown the SUID chrome-sandbox helper, and
         // Chromium aborts with SIGTRAP without this opt-out. Windows (where
         // the sandbox works differently) ignores it.
-        ELECTRON_DISABLE_SANDBOX: '1'
+        ELECTRON_DISABLE_SANDBOX: '1',
+        // Windows CI runners expose safeStorage (DPAPI), but its keys do not
+        // survive an app restart in that session, so phase 2 could not
+        // decrypt phase 1's history. The keyfile adapter's key lives in the
+        // data dir, making the persistence assertion deterministic.
+        AUTOEXTRACT_STORAGE_ADAPTER: 'keyfile'
       }),
       stdio: ['ignore', 'pipe', 'pipe']
     });

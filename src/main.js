@@ -202,11 +202,19 @@ function handleValidPayload(payload) {
 //   2. Keyfile adapter (src/storage.js): random AES-256-GCM key in a 0600
 //      sidecar file, for environments without an OS keystore (headless
 //      Linux, some CI).
+//   3. AUTOEXTRACT_STORAGE_ADAPTER=keyfile forces option 2 (portable
+//      installs, service sessions where OS-keystore keys do not survive a
+//      process restart, tests).
 function makeStorageAdapter(historyFilePath) {
+  if (process.env.AUTOEXTRACT_STORAGE_ADAPTER === 'keyfile') {
+    console.log('AutoExtract storage: keyfile adapter selected (AUTOEXTRACT_STORAGE_ADAPTER).');
+    return useKeyfileAdapter({ filePath: historyFilePath });
+  }
   try {
     var safeStorage = require('electron').safeStorage;
     if (safeStorage && typeof safeStorage.isEncryptionAvailable === 'function' &&
         safeStorage.isEncryptionAvailable()) {
+      console.log('AutoExtract storage: OS encryption adapter (safeStorage) selected.');
       return {
         encrypt: function (plaintext) {
           var nonce = crypto.randomBytes(12);
