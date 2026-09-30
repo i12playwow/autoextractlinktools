@@ -68,8 +68,9 @@ bridge edge cases, CLI, the desktop smoke test, and the extension E2E — on
 every push and pull request, on both
 Ubuntu (under `xvfb-run`, since Electron and the headless extension browser
 need a display) and Windows, and writes a per-suite results table to the
-run's summary. The Electron binary is cached; if its download fails, the
-layers that spawn the real app skip gracefully instead of failing the run.
+run's summary. The Electron binary is cached (per-OS cache roots, keyed by
+the workflow's `ELECTRON_VERSION`); if its download fails, the layers that
+spawn the real app skip gracefully instead of failing the run.
 The extension E2E rebuilds `chrome-extension-packed/` itself and tries every
 installed Chromium-family browser, because recent branded Chrome builds
 restrict `--load-extension` (Edge and Chromium still work). A second,
@@ -83,4 +84,12 @@ the same table without needing CI (`--light` matches the Light job;
 `npm run test:light` does the same), and `npm run test:mirror` checks that
 the suite lists have not drifted apart — the same mirror check the Light job
 runs, so a suite added to one place but not the others fails CI instead of
-silently not running anywhere.
+silently not running anywhere. The mirror check also pins the rest of the
+CI surface: ubuntu-24.04 runners, node24-runtime action majors
+(`checkout`/`setup-node`/`cache` @v5), a single explicit Node 22 across
+jobs, and an Electron cache key that must match the lockfile.
+Environment overrides the app itself honors: `AUTOEXTRACT_BRIDGE_PORT`
+(bridge listen port), `AUTOEXTRACT_DATA_DIR` (history location), and
+`AUTOEXTRACT_STORAGE_ADAPTER=keyfile` (forces the sidecar-key AES adapter
+instead of the OS keystore — for portable installs, service sessions where
+keystore keys do not survive a restart, and tests).

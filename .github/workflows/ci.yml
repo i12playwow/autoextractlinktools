@@ -12,6 +12,20 @@ concurrency:
 permissions:
   contents: read
 
+# Pinned surfaces (enforced by scripts/ci-test-summary.js --check-mirror, so
+# a change here without the mirror check fails CI):
+#   - Runners: ubuntu-24.04 in both jobs, pinned ahead of the Oct 19, 2026
+#     ubuntu-latest -> Ubuntu 26 migration; windows-latest stays floating on
+#     purpose (no migration pending, and a pin would freeze its image).
+#   - Actions: checkout / setup-node / cache on @v5, the node24 runtime
+#     majors (node20 was removed from hosted runners on Sep 23, 2026).
+#   - Node: 22 in both jobs (active LTS, maintained until Apr 2027; local
+#     dev runs 24, the engines floor stays >=18).
+#   - Electron binary: ELECTRON_VERSION below mirrors package-lock.json and
+#     keys the cache; the mirror check fails when they drift.
+env:
+  ELECTRON_VERSION: "33.4.11"
+
 jobs:
   # Fast pure-Node signal for every push: no Electron binary, no display, no
   # headless browser. Installs with --ignore-scripts (no Electron postinstall
@@ -29,10 +43,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -60,23 +74,29 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
-      # Electron's postinstall downloads the platform binary. It is needed by
-      # the bridge edge-case suite (spawns the real app) and the desktop smoke
-      # test; if the download fails, those layers skip gracefully rather than
-      # failing the run.
+      # Electron's postinstall downloads the platform binary (needed by the
+      # bridge edge-case suite's real-Electron section and the desktop smoke;
+      # if the download fails, those layers skip gracefully rather than
+      # failing the run). @electron/get picks its cache root per OS via
+      # env-paths: ~/.cache/electron on Linux but %LOCALAPPDATA%\electron\Cache
+      # on Windows, so both are listed or the Windows lane never hits. The
+      # key uses ELECTRON_VERSION from the workflow env (mirror-checked
+      # against package-lock.json) instead of a hand-copied literal.
       - name: Cache Electron binary
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
-          path: ~/.cache/electron
-          key: electron-${{ runner.os }}-33.4.11
+          path: |
+            ~/.cache/electron
+            ~/AppData/Local/electron/Cache
+          key: electron-${{ runner.os }}-${{ env.ELECTRON_VERSION }}
 
       - name: Install dependencies
         run: npm ci

@@ -20,8 +20,11 @@
 //   node scripts/ci-test-summary.js --check-mirror  verify the suite lists
 //     have not drifted apart: every counted suite must appear in `npm test`
 //     in the same order, every suite script must exist, the workflow must
-//     run both modes, and the ubuntu runners must be pinned to ubuntu-24.04
-//     (no floating ubuntu-latest that could jump images mid-migration).
+//     run both modes, and the pinned CI surface is intact — ubuntu-24.04
+//     runners (no floating ubuntu-latest that could jump images
+//     mid-migration), node24-runtime action majors (@v5 checkout,
+//     setup-node, cache), one explicit node-version across jobs, and an
+//     ELECTRON_VERSION cache-key env matching package-lock.json's electron.
 //     Exits non-zero on any drift; runs as a step in the Light job so drift
 //     breaks CI instead of silently skipping suites.
 //
@@ -143,6 +146,42 @@ function checkMirror() {
   }
   if (!/os:\s*\[[^\]]*ubuntu-24\.04/.test(workflow)) {
     problems.push('the test matrix does not pin ubuntu-24.04 in its os list');
+  }
+
+  // 5. Actions stay on node24-runtime majors: node20 was removed from the
+  //    hosted runners on Sep 23, 2026, so any @v4 checkout/setup-node/cache
+  //    is a deprecation warning (and a future hard failure).
+  ['checkout', 'setup-node', 'cache'].forEach((action) => {
+    const uses = workflow.match(new RegExp('uses:\\s*actions/' + action + '@(\\S+)')) || [];
+    const found = uses[1] || 'missing';
+    if (found.indexOf('v5') !== 0) {
+      problems.push('actions/' + action + ' is @' + found + '; expected @v5 (node24 runtime)');
+    }
+  });
+
+  // 6. The Node version in both setup-node steps is an explicit LTS pin, and
+  //    the Electron cache key is derived from an ELECTRON_VERSION env that
+  //    matches the lockfile — a lockfile bump without the workflow update
+  //    would silently cache-miss forever.
+  const nodeVersions = (workflow.match(/node-version:\s*\S+/g) || []).sort();
+  if (nodeVersions.length < 2 || nodeVersions[0] !== nodeVersions[nodeVersions.length - 1]) {
+    problems.push('setup-node node-version values differ across jobs: ' + JSON.stringify(nodeVersions));
+  }
+  if (nodeVersions[0] !== 'node-version: 22') {
+    problems.push('node-version is ' + nodeVersions[0] + '; expected "node-version: 22" (change the mirror check too if you meant it)');
+  }
+  const lock = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package-lock.json'), 'utf8'));
+  const lockElectron = String(lock.packages && lock.packages['node_modules/electron'] &&
+    lock.packages['node_modules/electron'].version || '');
+  const envMatch = workflow.match(/ELECTRON_VERSION:\s*"([^"]+)"/);
+  const envElectron = envMatch ? envMatch[1] : null;
+  if (!envElectron) {
+    problems.push('workflow does not define an ELECTRON_VERSION env for the electron cache key');
+  } else if (lockElectron && envElectron !== lockElectron) {
+    problems.push('workflow ELECTRON_VERSION ' + envElectron + ' does not match package-lock.json electron ' + lockElectron);
+  }
+  if (!/~\/\.cache\/electron/.test(workflow) || !/AppData\/Local\/electron\/Cache/.test(workflow)) {
+    problems.push('electron cache path must list both the Linux (~/.cache/electron) and Windows (%LOCALAPPDATA%\\electron\\Cache) roots');
   }
 
   if (problems.length > 0) {
